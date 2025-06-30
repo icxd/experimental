@@ -1,0 +1,6 @@
+/// 0
+
+proc main(argc int, argv **int) int {
+  return 0;
+}
+

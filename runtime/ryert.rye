@@ -1,0 +1,10 @@
+extern proc main(argc int, argv **int) int;
+
+when TARGET_OS == OS_MACOS {
+  proc _main(argc int, argv **int, envp **int) int {
+    var retcode int = main(argc, argv);
+
+    return retcode;
+  }
+} 
+

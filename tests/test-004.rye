@@ -1,0 +1,12 @@
+/// 10
+
+proc simple(a *int) int {
+  return *a;
+}
+
+proc main() int {
+  var a int = 10;
+  var b *int = &a; 
+  var c int = simple(b);
+  return c;
+}

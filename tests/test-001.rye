@@ -1,7 +1,9 @@
-proc main() int {
-  var a int = 69
-  var b *int = &a
-  var c int = *b
+/// 69
 
-  return c
+proc main() int {
+  var a int = 69;
+  var b *int = &a;
+  var c int = *b;
+
+  return c;
 }
