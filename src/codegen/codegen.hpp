@@ -48,9 +48,11 @@ constexpr Target TARGET_X86_64_MACOS_NASM = {ARCH_X86_64, OS_MACOS, ASM_NASM},
 
 class Emitter {
 public:
-  static Emitter *get_emitter(Target target);
+  static Emitter *get_emitter(Target target,
+                              const std::vector<Constant> &constants,
+                              const std::vector<Function *> &functions);
 
-  virtual void emit(const std::vector<Function *> &functions) = 0;
+  virtual void emit() = 0;
 
 private:
   virtual void emit_function(Function function) = 0;

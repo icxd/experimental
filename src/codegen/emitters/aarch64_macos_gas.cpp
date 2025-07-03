@@ -1,13 +1,11 @@
-#include <cassert>
 #include <codegen/emitters/aarch64_macos_gas.hpp>
 #include <codegen/regalloc.hpp>
 #include <ir/ir.hpp>
 
-void Aarch64MacosGasEmitter::emit(const std::vector<Function *> &functions) {
+void Aarch64MacosGasEmitter::emit() {
   _output += ".text\n";
-  for (const auto *function: functions) {
+  for (const auto *function: _functions)
     emit_function(*function);
-  }
 }
 
 static size_t count_local_variables(const Function &function) {
@@ -53,7 +51,7 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
     if (has_call_instruction) {
       _output += "  stp x29, x30, [sp, -" + std::to_string(stack_size) + "]!\n";
       _output += "  mov x29, sp\n";
-    } else {
+    } else if (local_vars > 0) {
       _output += "  sub sp, sp, " + std::to_string(stack_size) + "\n";
     }
 
@@ -71,7 +69,7 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
 
     if (has_call_instruction)
       _output += "  ldp x29, x30, [sp], " + std::to_string(stack_size) + "\n";
-    else
+    else if (local_vars > 0)
       _output += "  add sp, sp, " + std::to_string(stack_size) + "\n";
 
     _output += "  ret\n";
@@ -194,7 +192,6 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     } else {
       _output += "  mov x0, " + emit_operand(src) + "\n";
     }
-    // _output += "  ldp x29, x30, [sp], #16\n";
   } break;
   }
 }
@@ -202,6 +199,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
 std::string Aarch64MacosGasEmitter::emit_operand(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
+  case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
   case OPERAND_TEMPORARY:    return current_regmap().at(operand.name);
   case OPERAND_FUNCTION:     return operand.name;

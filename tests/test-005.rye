@@ -1,0 +1,9 @@
+/// 69
+
+const A int = 34;
+const B int = 35;
+const C int = A + B;
+
+proc main() int {
+  return C;
+}

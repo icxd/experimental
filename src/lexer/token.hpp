@@ -6,6 +6,7 @@ enum TokenType {
   TOK_ID,
   TOK_INT,
 
+  TOK_CONST,
   TOK_ELSE,
   TOK_EXTERN,
   TOK_PROC,
@@ -50,6 +51,7 @@ struct Token {
     switch (type) {
     case TOK_ID:        return std::format("TOK_ID({})", id_value);
     case TOK_INT:       return std::format("TOK_INT({})", int_value);
+    case TOK_CONST:     return std::format("TOK_CONST");
     case TOK_ELSE:      return std::format("TOK_ELSE");
     case TOK_EXTERN:    return std::format("TOK_EXTERN");
     case TOK_PROC:      return std::format("TOK_PROC");

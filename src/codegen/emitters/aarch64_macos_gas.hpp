@@ -1,12 +1,15 @@
 #pragma once
 
 #include <codegen/codegen.hpp>
+#include <common.hpp>
 
 class Aarch64MacosGasEmitter : public Emitter {
 public:
-  Aarch64MacosGasEmitter() = default;
+  Aarch64MacosGasEmitter(const std::vector<Constant> &constants,
+                         const std::vector<Function *> &functions) :
+      _constants(std::move(constants)), _functions(std::move(functions)) {}
 
-  void emit(const std::vector<Function *> &functions) override;
+  void emit() override;
 
   const std::string &output() const { return _output; }
 
@@ -19,7 +22,19 @@ private:
     return _register_maps.at(_current_fn);
   }
 
+  std::optional<Operand> get_constant(std::string name) const {
+    for (const auto &constant: _constants) {
+      if (constant.name == name) {
+        return constant.value;
+      }
+    }
+    return std::nullopt;
+  }
+
 private:
+  std::vector<Constant> _constants;
+  std::vector<Function *> _functions;
+
   std::string _output;
   std::string _current_fn = "";
   std::map<std::string, size_t> _stack_loc{};

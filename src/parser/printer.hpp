@@ -136,6 +136,15 @@ static inline void print_decl(std::ostream &out, Decl *decl,
       << (void *) decl << " \033[36m<" << decl->start << ">\033[0m";
 
   switch (decl->type) {
+  case DECL_CONST: {
+    auto const_ = std::get<decl::Const *>(decl->data);
+    out << " \033[34m" << const_->name.id_value << " \033[31m";
+    print_type(out, const_->type);
+    out << "\n";
+    print_expr(out, const_->value, indent.next(true));
+    break;
+  }
+
   case DECL_PROC: {
     auto proc = std::get<decl::Proc *>(decl->data);
     if (proc->linkage == LINK_EXTERN)

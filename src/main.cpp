@@ -25,12 +25,12 @@ int main(int argc, char *argv[]) {
 
   opts.files.push_back("runtime/ryert.rye");
 
-  for (int i = 0; i < argc; i++) {
-    char *opt = eat_arg();
+  for (int i = 0; i < argc;) {
+    char *opt = argv[i++];
     if (opt[0] != '-') {
       opts.files.push_back(opt);
     } else if (strncmp(opt, "-O", 2) == 0 || strncmp(opt, "--output", 8) == 0) {
-      char *output_file = eat_arg();
+      char *output_file = argv[i++];
       opts.output_file = output_file;
     } else if (strncmp(opt, "--print-tokens", 14) == 0) {
       opts.print_tokens = true;
@@ -74,11 +74,11 @@ int main(int argc, char *argv[]) {
       return EXIT_FAILURE;
     }
 
-    if (opts.print_ast) {
-      for (auto *decl: decls.value())
-        print_decl(std::cout, decl);
-      continue;
-    }
+    // if (opts.print_ast) {
+    //   for (auto *decl: decls.value())
+    //     print_decl(std::cout, decl);
+    //   continue;
+    // }
 
     Checker checker;
     ErrorOr<void> check = checker.check_decls(decls.value());
@@ -102,9 +102,11 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    auto *emitter = reinterpret_cast<Aarch64MacosGasEmitter *>(
-        Emitter::get_emitter(TARGET_AARCH64_MACOS_GAS));
-    emitter->emit(gen.builder().functions());
+    auto *emitter =
+        reinterpret_cast<Aarch64MacosGasEmitter *>(Emitter::get_emitter(
+            TARGET_AARCH64_MACOS_GAS, gen.builder().constants(),
+            gen.builder().functions()));
+    emitter->emit();
 
     fs::path dir = fs::current_path() / ".rye";
     if (!fs::exists(dir))

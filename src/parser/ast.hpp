@@ -19,6 +19,12 @@ enum Linkage { LINK_INTERN, LINK_EXTERN };
 
 namespace decl {
 
+  struct Const {
+    Token name;
+    Type *type;
+    Expr *value;
+  };
+
   struct Proc {
     Token name;
     std::vector<Param> params;
@@ -35,11 +41,11 @@ namespace decl {
 
 } // namespace decl
 
-enum DeclType { DECL_PROC, DECL_WHEN };
+enum DeclType { DECL_CONST, DECL_PROC, DECL_WHEN };
 struct Decl {
   DeclType type;
   size_t start, end;
-  std::variant<decl::Proc *, decl::When *> data;
+  std::variant<decl::Const *, decl::Proc *, decl::When *> data;
 };
 
 namespace stmt {

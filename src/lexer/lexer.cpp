@@ -32,7 +32,9 @@ ErrorOr<Token> Lexer::next_token() {
     std::string_view id = _source.substr(start, _pos - start);
 
     TokenType type = TOK_ID;
-    if (id == "else")
+    if (id == "const")
+      type = TOK_CONST;
+    else if (id == "else")
       type = TOK_ELSE;
     else if (id == "extern")
       type = TOK_EXTERN;

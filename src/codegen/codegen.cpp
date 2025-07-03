@@ -1,7 +1,9 @@
 #include <codegen/codegen.hpp>
 #include <codegen/emitters/aarch64_macos_gas.hpp>
 
-Emitter *Emitter::get_emitter(Target target) {
+Emitter *Emitter::get_emitter(Target target,
+                              const std::vector<Constant> &constants,
+                              const std::vector<Function *> &functions) {
   if (!target.is_valid_target())
     throw std::runtime_error("invalid target");
 
@@ -14,7 +16,7 @@ Emitter *Emitter::get_emitter(Target target) {
   else if (target == TARGET_X86_64_LINUX_GAS)
     throw std::runtime_error("target not supported yet");
   else if (target == TARGET_AARCH64_MACOS_GAS)
-    return new Aarch64MacosGasEmitter;
+    return new Aarch64MacosGasEmitter(constants, functions);
   else if (target == TARGET_AARCH64_LINUX_GAS)
     throw std::runtime_error("target not supported yet");
 

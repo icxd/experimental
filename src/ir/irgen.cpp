@@ -10,6 +10,12 @@ void Generator::gen_decls() {
 
 void Generator::gen_decl(Decl *decl) {
   switch (decl->type) {
+  case DECL_CONST: {
+    auto const_ = std::get<decl::Const *>(decl->data);
+    Operand value = gen_expr(const_->value, nullptr);
+    _builder.create_constant(const_->name.id_value, value);
+  } break;
+
   case DECL_PROC: {
     auto proc = std::get<decl::Proc *>(decl->data);
 
@@ -55,6 +61,7 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
 }
 
 Operand Generator::gen_expr(Expr *expr, Function *fn) {
+  Operand operand;
   switch (expr->type) {
   case EXPR_INT: {
     auto int_ = std::get<expr::Int *>(expr->data);
@@ -68,6 +75,11 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_VAR: {
     auto var = std::get<expr::Var *>(expr->data);
+
+    auto constant = _builder.find_constant(var->var.id_value);
+    if (constant.has_value())
+      return Operand::Constant(std::string(constant->name));
+
     return Operand::Variable(std::string(var->var.id_value));
   }
 

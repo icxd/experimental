@@ -58,6 +58,22 @@ ErrorOr<Decl *> Parser::parse_decl() {
                         .linkage = linkage,
                         .body = body,
                     }};
+  } else if (peek().type == TOK_CONST) {
+    Token const_ = try$(expect(TOK_CONST, "Expected `const`"));
+    Token id = try$(expect(TOK_ID, "Expected an identifier after `const`"));
+    Type *type = try$(parse_type());
+    Token eq = try$(expect(TOK_EQ, "Expected = after type"));
+    Expr *value = try$(parse_expr());
+    Token semi = try$(expect(TOK_SEMICOLON, "Expected ; after value"));
+
+    return new Decl{.type = DECL_CONST,
+                    .start = const_.start,
+                    .end = semi.end,
+                    .data = new decl::Const{
+                        .name = id,
+                        .type = type,
+                        .value = value,
+                    }};
   } else if (peek().type == TOK_WHEN) {
     Token when = try$(expect(TOK_WHEN, "Expected `when`"));
     Expr *condition = try$(parse_expr());

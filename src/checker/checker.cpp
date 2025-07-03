@@ -17,6 +17,39 @@ ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
 
 ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
   switch (decl->type) {
+  case DECL_CONST: {
+    decl::Const *const_ = std::get<decl::Const *>(decl->data);
+    if (find_const(const_->name.id_value).has_value()) {
+      return std::unexpected(Error(
+          std::format("Redeclaration of constant `{}`", const_->name.id_value),
+          decl->start, decl->end));
+    }
+    Type *type = try$(check_type(const_->type, scope));
+    Expr *value = try$(evaluate_constant(const_->value, scope));
+    const_->value = value;
+    Type *value_type = try$(check_expr(value, scope));
+    if (!type_eq(type, value_type)) {
+      return std::unexpected(
+          Error(std::format("Constant `{}` has type `{}`, but value has type "
+                            "`{}`",
+                            const_->name.id_value, type->to_string(),
+                            value_type->to_string()),
+                decl->start, decl->end)
+              .with_hint(std::format("Expected `{}`, found `{}`",
+                                     type->to_string(),
+                                     value_type->to_string())));
+    }
+    const_->value->expr_type = type;
+    value->expr_type = type;
+    _consts.push_back(CheckedConst{
+        const_->name.id_value,
+        type,
+        value,
+    });
+
+    return {};
+  }
+
   case DECL_PROC: {
     decl::Proc *proc = std::get<decl::Proc *>(decl->data);
     if (find_proc(proc->name.id_value).has_value()) {
@@ -314,6 +347,8 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
           error.add_help(ErrorHelp(*fix, argument->start, argument->end));
         return std::unexpected(error);
       }
+
+      argument->expr_type = arg_type;
     }
 
     Type *ret_type = try$(check_type(proc->ret_type, scope));
@@ -364,7 +399,18 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
     Expr *rhs = try$(evaluate_constant(binary->rhs, scope));
 
     switch (binary->op) {
-    case expr::Binary::BINOP_PLUS:
+    case expr::Binary::BINOP_PLUS: {
+      if (lhs->type != EXPR_INT)
+        PANIC("TODO: support other than ints as LHS in +");
+      if (rhs->type != EXPR_INT)
+        PANIC("TODO: support other than ints as RHS in +");
+
+      int64_t lhs_value = std::get<expr::Int *>(lhs->data)->value;
+      int64_t rhs_value = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_INT, expr->start, expr->end,
+                      new expr::Int{lhs_value + rhs_value}};
+    }
+
     case expr::Binary::BINOP_MINUS:
     case expr::Binary::BINOP_STAR:
     case expr::Binary::BINOP_SLASH:
@@ -381,13 +427,8 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
 
       int64_t lhs_value = std::get<expr::Int *>(lhs->data)->value;
       int64_t rhs_value = std::get<expr::Int *>(rhs->data)->value;
-      if (lhs_value == rhs_value) {
-        return new Expr{EXPR_BOOL, expr->start, expr->end,
-                        new expr::Bool{true}};
-      } else {
-        return new Expr{EXPR_BOOL, expr->start, expr->end,
-                        new expr::Bool{false}};
-      }
+      return new Expr{EXPR_BOOL, expr->start, expr->end,
+                      new expr::Bool{lhs_value == rhs_value}};
     }
 
     case expr::Binary::BINOP_NEQ: break;

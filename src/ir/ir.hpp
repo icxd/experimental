@@ -27,6 +27,7 @@
 
 enum OperandType {
   OPERAND_CONSTANT_INT,
+  OPERAND_CONSTANT,
   OPERAND_VARIABLE,
   OPERAND_TEMPORARY,
   OPERAND_FUNCTION,
@@ -42,6 +43,9 @@ struct Operand {
     op.int_value = v;
     return op;
   }
+  static Operand Constant(const std::string &n) {
+    return Operand{OPERAND_CONSTANT, n};
+  }
   static Operand Variable(const std::string &n) {
     return Operand{OPERAND_VARIABLE, n};
   }
@@ -52,9 +56,20 @@ struct Operand {
     return Operand{OPERAND_FUNCTION, n};
   }
 
+  std::string debug() const {
+    switch (type) {
+    case OPERAND_VARIABLE:     return std::format("Variable({})", name);
+    case OPERAND_CONSTANT:     return std::format("Constant({})", name);
+    case OPERAND_TEMPORARY:    return std::format("Temporary({})", name);
+    case OPERAND_FUNCTION:     return std::format("Function({})", name);
+    case OPERAND_CONSTANT_INT: return std::format("ConstantInt({})", int_value);
+    }
+  }
+
   std::string to_string() const {
     switch (type) {
     case OPERAND_VARIABLE:  return ANSI_MAGENTA + name + ANSI_RESET;
+    case OPERAND_CONSTANT:  return ANSI_BLUE + name + ANSI_RESET;
     case OPERAND_TEMPORARY: return ANSI_CYAN + name + ANSI_RESET;
     case OPERAND_FUNCTION:  return ANSI_GREEN + name + ANSI_RESET;
     case OPERAND_CONSTANT_INT:
@@ -83,6 +98,7 @@ struct Instruction {
 
   std::string to_string() const {
     switch (opcode) {
+    case OP_NOP: return ANSI_RED "nop" ANSI_RESET;
     case OP_ASSIGN:
       return dst->to_string() + ANSI_RED " = " ANSI_RESET + srcs[0].to_string();
     case OP_ADDROF:
@@ -119,7 +135,6 @@ struct Instruction {
       return out;
     }
     case OP_RET: return ANSI_RED "ret " ANSI_RESET + srcs[0].to_string();
-    case OP_NOP: return ANSI_RED "nop" ANSI_RESET;
     }
   }
 };
@@ -184,18 +199,47 @@ public:
   void ret(Operand src) { append(Instruction(OP_RET, std::nullopt, {src})); }
 };
 
+struct Constant {
+  std::string_view name;
+  Operand value;
+
+  Constant(std::string_view n, Operand v) : name(n), value(v) {}
+
+  std::string to_string() const {
+    return std::format("{} = {}", ANSI_MAGENTA + std::string(name) + ANSI_RESET,
+                       value.to_string());
+  }
+};
+
 class Builder {
 public:
   Function *create_function(std::string_view name,
                             std::vector<std::string_view> parameters);
   Operand new_temp();
 
+  void create_constant(std::string_view name, Operand value) {
+    _constants.push_back(Constant{name, value});
+  }
+
   const std::vector<Function *> &functions() const { return _functions; }
+
+  const std::vector<Constant> &constants() const { return _constants; }
+  std::vector<Constant> &constants() { return _constants; }
+
   void print() const;
+
+  std::optional<Constant> find_constant(std::string_view name) const {
+    for (const auto &constant: _constants) {
+      if (constant.name == name)
+        return constant;
+    }
+    return std::nullopt;
+  }
 
 private:
   std::vector<Function *> _functions{};
   size_t _temp_counter = 0;
+  std::vector<Constant> _constants{};
 };
 
 std::vector<Instruction> fold_constants(const std::vector<Instruction> &input);
