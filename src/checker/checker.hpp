@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 #include <common.hpp>
 #include <parser/ast.hpp>
 #include <vector>
@@ -66,7 +68,7 @@ private:
 private:
   Scope *_global_scope = new Scope;
   std::vector<CheckedProc> _procs = {};
-  size_t _current_proc_id = SIZE_T_MAX;
+  size_t _current_proc_id = std::numeric_limits<size_t>::max();
   std::vector<CheckedConst> _consts = {};
 };
 

@@ -1,5 +1,7 @@
 #include <codegen/codegen.hpp>
+#include <codegen/emitters/aarch64_linux_gas.hpp>
 #include <codegen/emitters/aarch64_macos_gas.hpp>
+#include <codegen/emitters/x86_64_linux_gas.hpp>
 
 Emitter *Emitter::get_emitter(Target target,
                               const std::vector<Constant> &constants,
@@ -14,11 +16,11 @@ Emitter *Emitter::get_emitter(Target target,
   else if (target == TARGET_X86_64_LINUX_NASM)
     throw std::runtime_error("target not supported yet");
   else if (target == TARGET_X86_64_LINUX_GAS)
-    throw std::runtime_error("target not supported yet");
+    return new X86_64LinuxGasEmitter(constants, functions);
   else if (target == TARGET_AARCH64_MACOS_GAS)
     return new Aarch64MacosGasEmitter(constants, functions);
   else if (target == TARGET_AARCH64_LINUX_GAS)
-    throw std::runtime_error("target not supported yet");
+    return new Aarch64LinuxGasEmitter(constants, functions);
 
   throw std::runtime_error("invalid target");
 }

@@ -1,8 +1,9 @@
+#include <memory>
+
 #include <checker/checker.hpp>
 #include <codegen/codegen.hpp>
-#include <codegen/emitters/aarch64_macos_gas.hpp>
-#include <codegen/regalloc.hpp>
 #include <common.hpp>
+#include <host.hpp>
 #include <ir/irgen.hpp>
 #include <lexer/lexer.hpp>
 #include <parser/parser.hpp>
@@ -102,10 +103,9 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    auto *emitter =
-        reinterpret_cast<Aarch64MacosGasEmitter *>(Emitter::get_emitter(
-            TARGET_AARCH64_MACOS_GAS, gen.builder().constants(),
-            gen.builder().functions()));
+    Target target = get_host_target();
+    std::unique_ptr<Emitter> emitter(Emitter::get_emitter(
+        target, gen.builder().constants(), gen.builder().functions()));
     emitter->emit();
 
     fs::path dir = fs::current_path() / ".rye";
@@ -119,7 +119,8 @@ int main(int argc, char *argv[]) {
       fs::create_directory(out_path.parent_path());
 
     std::ofstream out(out_path);
-    out.write(emitter->output().data(), emitter->output().size());
+    out.write(emitter->output().data(),
+              static_cast<std::streamsize>(emitter->output().size()));
     out.close();
   }
 

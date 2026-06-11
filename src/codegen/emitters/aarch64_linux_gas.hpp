@@ -3,9 +3,9 @@
 #include <codegen/codegen.hpp>
 #include <common.hpp>
 
-class Aarch64MacosGasEmitter : public Emitter {
+class Aarch64LinuxGasEmitter : public Emitter {
 public:
-  Aarch64MacosGasEmitter(const std::vector<Constant> &constants,
+  Aarch64LinuxGasEmitter(const std::vector<Constant> &constants,
                          const std::vector<Function *> &functions) :
       _constants(constants), _functions(functions) {}
 
@@ -23,14 +23,12 @@ private:
 
   std::optional<Operand> get_constant(std::string name) const {
     for (const auto &constant: _constants) {
-      if (constant.name == name) {
+      if (constant.name == name)
         return constant.value;
-      }
     }
     return std::nullopt;
   }
 
-private:
   std::vector<Constant> _constants;
   std::vector<Function *> _functions;
 

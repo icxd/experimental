@@ -1,5 +1,5 @@
-#include <__expected/unexpected.h>
 #include <checker/checker.hpp>
+#include <host.hpp>
 #include "parser/ast.hpp"
 
 ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
@@ -8,7 +8,7 @@ ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
   _consts.push_back(CheckedConst{"OS_MACOS", new Type{TYPE_INT},
                                  new Expr{EXPR_INT, 0, 0, new expr::Int{1}}});
   _consts.push_back(CheckedConst{"TARGET_OS", new Type{TYPE_INT},
-                                 new Expr{EXPR_INT, 0, 0, new expr::Int{1}}});
+                                 new Expr{EXPR_INT, 0, 0, new expr::Int{HOST_OS}}});
 
   for (Decl *decl: decls)
     try$(check_decl(decl, _global_scope));
@@ -94,7 +94,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     for (auto *stmt: proc->body)
       try$(check_stmt(stmt, proc_scope));
 
-    _current_proc_id = SIZE_T_MAX;
+    _current_proc_id = std::numeric_limits<size_t>::max();
 
     return {};
   }

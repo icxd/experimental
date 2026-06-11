@@ -3,10 +3,10 @@
 #include <codegen/codegen.hpp>
 #include <common.hpp>
 
-class Aarch64MacosGasEmitter : public Emitter {
+class X86_64LinuxGasEmitter : public Emitter {
 public:
-  Aarch64MacosGasEmitter(const std::vector<Constant> &constants,
-                         const std::vector<Function *> &functions) :
+  X86_64LinuxGasEmitter(const std::vector<Constant> &constants,
+                        const std::vector<Function *> &functions) :
       _constants(constants), _functions(functions) {}
 
   void emit() override;
@@ -23,14 +23,12 @@ private:
 
   std::optional<Operand> get_constant(std::string name) const {
     for (const auto &constant: _constants) {
-      if (constant.name == name) {
+      if (constant.name == name)
         return constant.value;
-      }
     }
     return std::nullopt;
   }
 
-private:
   std::vector<Constant> _constants;
   std::vector<Function *> _functions;
 
@@ -39,6 +37,6 @@ private:
   std::map<std::string, size_t> _stack_loc{};
   size_t _next_stack_loc = 16;
   std::map<std::string, std::map<std::string, std::string>> _register_maps;
-  std::vector<std::string> _registers{"x0", "x1", "x2", "x3",
-                                      "x4", "x5", "x6", "x7"};
+  std::vector<std::string> _registers{"r10", "r11", "r12", "r13",
+                                      "r14", "r15", "rbx", "rax"};
 };
