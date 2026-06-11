@@ -1,8 +1,12 @@
+#include <algorithm>
 #include <utility>
 
 #include <checker/checker.hpp>
 #include <host.hpp>
+#include <module.hpp>
 #include "parser/ast.hpp"
+
+namespace fs = std::filesystem;
 
 ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
   _consts.push_back(CheckedConst{"OS_LINUX", new Type{TYPE_INT},
@@ -54,7 +58,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
 
   case DECL_PROC: {
     decl::Proc *proc = std::get<decl::Proc *>(decl->data);
-    if (find_proc(proc->name.id_value).has_value()) {
+    if (find_local_proc(proc->name.id_value).has_value()) {
       return std::unexpected(Error(
           std::format("Redeclaration of procedure `{}`", proc->name.id_value),
           decl->start, decl->end));
@@ -139,8 +143,41 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
 
     return {};
   }
+
+  case DECL_IMPORT: {
+    decl::Import *import = std::get<decl::Import *>(decl->data);
+    return check_import(import, decl->start, decl->end);
+  }
   }
   std::unreachable();
+}
+
+ErrorOr<void> Checker::check_import(decl::Import *import, size_t start,
+                                    size_t end) {
+  fs::path resolved =
+      resolve_import_path(_file_path, import->path.string_value);
+  if (!fs::exists(resolved)) {
+    return std::unexpected(
+        Error(std::format("Could not find module `{}`", import->path.string_value),
+              start, end));
+  }
+
+  std::string import_module = module_name_from_path(resolved);
+  if (_registry == nullptr || !_registry->has_module(import_module)) {
+    return std::unexpected(
+        Error(std::format("Module `{}` is not available (import `{}` resolves "
+                           "to `{}`)",
+                           import_module, import->path.string_value,
+                           resolved.string()),
+              start, end)
+            .with_hint("Imported modules must be compiled before the importer"));
+  }
+
+  if (std::find(_imports.begin(), _imports.end(), import_module) ==
+      _imports.end())
+    _imports.push_back(import_module);
+
+  return {};
 }
 
 ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
@@ -450,29 +487,49 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
   case EXPR_CALL: {
     expr::Call *call = std::get<expr::Call *>(expr->data);
 
-    auto proc = find_proc(call->name.id_value);
-    if (!proc.has_value())
-      return std::unexpected(Error(
-          std::format("Use undeclared procedure `{}`", call->name.id_value),
-          expr->start, expr->end));
+    std::optional<CheckedProc> proc;
+    std::string qualified_name;
+    if (call->module.has_value()) {
+      std::string_view module = call->module->id_value;
+      qualified_name =
+          std::format("{}:{}", module, call->name.id_value);
+      proc = find_qualified_proc(module, call->name.id_value);
+      if (!proc.has_value()) {
+        return std::unexpected(
+            Error(std::format("Use undeclared procedure `{}`", qualified_name),
+                  expr->start, expr->end));
+      }
+    } else {
+      qualified_name = std::string(call->name.id_value);
+      proc = find_local_proc(call->name.id_value);
+      if (!proc.has_value()) {
+        return std::unexpected(
+            Error(std::format("Use undeclared procedure `{}`", qualified_name),
+                  expr->start, expr->end)
+                .with_hint(std::format(
+                    "Procedures from other modules must be called as "
+                    "`module:{}`",
+                    call->name.id_value)));
+      }
+    }
 
     if (call->arguments.size() < proc->params.size()) {
       return std::unexpected(
           Error(std::format("Too few arguments for procedure `{}`",
-                            call->name.id_value),
+                            qualified_name),
                 expr->start, expr->end)
               .with_hint(
                   std::format("`{}` expected {} parameters but {} was provided",
-                              call->name.id_value, proc->params.size(),
+                              qualified_name, proc->params.size(),
                               call->arguments.size())));
     } else if (call->arguments.size() > proc->params.size()) {
       return std::unexpected(
           Error(std::format("Too many arguments for procedure `{}`",
-                            call->name.id_value),
+                            qualified_name),
                 expr->start, expr->end)
               .with_hint(
                   std::format("`{}` expected {} parameters but {} was provided",
-                              call->name.id_value, proc->params.size(),
+                              qualified_name, proc->params.size(),
                               call->arguments.size())));
     }
 
@@ -661,13 +718,20 @@ bool Checker::type_eq(Type *a, Type *b) {
   std::unreachable();
 }
 
-std::optional<CheckedProc> Checker::find_proc(std::string_view name) {
+std::optional<CheckedProc> Checker::find_local_proc(std::string_view name) {
   for (const auto &proc: _procs) {
     if (proc.name == name)
       return proc;
   }
 
   return std::nullopt;
+}
+
+std::optional<CheckedProc>
+Checker::find_qualified_proc(std::string_view module, std::string_view name) {
+  if (_registry == nullptr)
+    return std::nullopt;
+  return _registry->find_proc(module, name);
 }
 
 std::optional<CheckedConst> Checker::find_const(std::string_view name) {

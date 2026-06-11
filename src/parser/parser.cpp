@@ -104,9 +104,22 @@ ErrorOr<Decl *> Parser::parse_decl() {
                                     .start = when.start,
                                     .end = previous().end,
                                     .data = when_data});
+  } else if (peek().type == TOK_IMPORT) {
+    Token import = try$(expect(TOK_IMPORT, "Expected `import`"));
+    Token path = try$(expect(TOK_STRING, "Expected import path string"));
+    Token semi = try$(expect(TOK_SEMICOLON, "Expected `;` after import"));
+
+    auto *import_data =
+        _arena.create<decl::Import>(decl::Import{.path = path});
+
+    return _arena.create<Decl>(Decl{.type = DECL_IMPORT,
+                                    .start = import.start,
+                                    .end = semi.end,
+                                    .data = import_data});
   } else {
     return std::unexpected(
-        Error("Expected `proc` or `when`", peek().start, peek().end));
+        Error("Expected `proc`, `const`, `import`, or `when`", peek().start,
+              peek().end));
   }
 }
 
@@ -376,6 +389,15 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
           .data = _arena.create<expr::Bool>(expr::Bool{.value = false}),
       });
     else {
+      std::optional<Token> module = std::nullopt;
+      Token name = var;
+
+      if (peek().type == TOK_COLON) {
+        consume();
+        module = var;
+        name = try$(expect(TOK_ID, "Expected procedure name after `:`"));
+      }
+
       if (peek().type == TOK_OPAREN) {
         Token oparen = try$(expect(TOK_OPAREN, "Expected ( after identifier"));
         std::vector<Expr *> args{};
@@ -392,8 +414,14 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
             .type = EXPR_CALL,
             .start = var.start,
             .end = cparen.end,
-            .data = _arena.create<expr::Call>(expr::Call{var, args}),
+            .data = _arena.create<expr::Call>(
+                expr::Call{.module = module, .name = name, .arguments = args}),
         });
+      }
+
+      if (module.has_value()) {
+        return std::unexpected(
+            Error("Expected `(` after qualified name", name.start, name.end));
       }
 
       return _arena.create<Expr>(Expr{

@@ -225,5 +225,11 @@ static inline void print_decl(std::ostream &out, Decl *decl,
     }
     break;
   }
+
+  case DECL_IMPORT: {
+    auto import = std::get<decl::Import *>(decl->data);
+    out << " \033[33m\"" << import->path.string_value << "\"\033[0m\n";
+    break;
+  }
   }
 }

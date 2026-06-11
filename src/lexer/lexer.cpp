@@ -56,6 +56,8 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_BREAK;
     else if (id == "continue")
       type = TOK_CONTINUE;
+    else if (id == "import")
+      type = TOK_IMPORT;
 
     return Token{
         .type = type,
@@ -63,6 +65,27 @@ ErrorOr<Token> Lexer::next_token() {
         .end = _pos,
         .id_value = id,
     };
+  }
+
+  if (peek() == '"') {
+    size_t start = _pos;
+    _pos++;
+    while (_pos < _source.size() && peek() != '"') {
+      if (peek() == '\\' && _pos + 1 < _source.size())
+        _pos += 2;
+      else
+        _pos++;
+    }
+    if (_pos >= _source.size()) {
+      return std::unexpected(
+          Error("Unterminated string literal", start, _source.size()));
+    }
+    std::string_view value = _source.substr(start + 1, _pos - start - 1);
+    _pos++;
+    return Token{.type = TOK_STRING,
+                 .start = start,
+                 .end = _pos,
+                 .string_value = value};
   }
 
   if (std::isdigit(peek())) {
@@ -94,6 +117,7 @@ ErrorOr<Token> Lexer::next_token() {
   case '!': return double_char_token('=', TOK_NEQ, TOK_BANG);
   case '<': return double_char_token('=', TOK_LTE, TOK_LT);
   case '>': return double_char_token('=', TOK_GTE, TOK_GT);
+  case ':': return single_char_token(TOK_COLON);
   case '&': return double_char_token('&', TOK_AMPAMP, TOK_AMPERSAND);
   case '|':
     if (_pos + 1 < _source.size() && peek(1) == '|')

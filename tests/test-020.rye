@@ -1,0 +1,7 @@
+/// 42
+
+import "lib/math.rye";
+
+proc main() int {
+  return math:add(6, math:mul(4, 9));
+}
