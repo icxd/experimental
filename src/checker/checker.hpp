@@ -11,16 +11,19 @@
 class Checker {
 public:
   Checker(std::string_view module_name, std::string_view file_path,
-          const ModuleRegistry *registry = nullptr, bool is_runtime = false) :
+          const ModuleRegistry *registry = nullptr, bool is_runtime = false,
+          const std::vector<std::string> &import_search_paths = {}) :
       _module_name(module_name),
       _file_path(file_path),
       _registry(registry),
-      _is_runtime(is_runtime) {}
+      _is_runtime(is_runtime),
+      _import_search_paths(import_search_paths) {}
 
   ErrorOr<void> check_decls(const std::vector<Decl *> &decls);
 
   const std::vector<CheckedProc> &procs() const { return _procs; }
   const std::vector<CheckedConst> &consts() const { return _consts; }
+  const std::vector<std::string> &imports() const { return _imports; }
 
 private:
   ErrorOr<void> check_decl(Decl *decl, Scope *scope);
@@ -35,7 +38,13 @@ private:
   std::optional<CheckedProc> find_local_proc(std::string_view name);
   std::optional<CheckedProc> find_qualified_proc(std::string_view module,
                                                  std::string_view name);
+  ErrorOr<std::pair<CheckedProc, std::string>>
+  find_imported_proc(std::string_view name, size_t start, size_t end);
   std::optional<CheckedConst> find_const(std::string_view name);
+  std::optional<CheckedConst> find_qualified_const(std::string_view module,
+                                                   std::string_view name);
+  ErrorOr<CheckedConst> find_imported_const(std::string_view name, size_t start,
+                                            size_t end);
 
   ErrorOr<void> check_import(decl::Import *import, size_t start, size_t end);
 
@@ -45,6 +54,7 @@ private:
   std::string _file_path;
   const ModuleRegistry *_registry = nullptr;
   bool _is_runtime = false;
+  std::vector<std::string> _import_search_paths = {};
   std::vector<std::string> _imports = {};
   std::vector<CheckedProc> _procs = {};
   size_t _current_proc_id = std::numeric_limits<size_t>::max();

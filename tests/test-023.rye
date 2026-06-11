@@ -1,0 +1,8 @@
+/// 42
+/// import-path:tests/vendor
+
+import "answer.rye";
+
+proc main() int {
+  return answer();
+}

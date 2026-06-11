@@ -18,6 +18,7 @@ namespace fs = std::filesystem;
 
 struct Opts {
   std::vector<std::string> files = {};
+  std::vector<std::string> import_paths = {};
   std::string output_file = "a.out";
   bool print_tokens = false;
   bool print_ast = false;
@@ -59,7 +60,9 @@ static ErrorOr<std::string> read_source(const std::string &path) {
   return ss.str();
 }
 
-static ErrorOr<ParsedModule> parse_module(const std::string &path) {
+static ErrorOr<ParsedModule>
+parse_module(const std::string &path,
+             const std::vector<std::string> &import_search_paths) {
   ParsedModule module{};
   module.rel_path = rel_path_of(path);
   module.abs_path = abs_path_of(path);
@@ -87,22 +90,27 @@ static ErrorOr<ParsedModule> parse_module(const std::string &path) {
     if (decl->type != DECL_IMPORT)
       continue;
     auto *import = std::get<decl::Import *>(decl->data);
-    fs::path resolved =
-        resolve_import_path(module.abs_path, import->path.string_value);
-    if (!fs::exists(resolved)) {
+    std::vector<fs::path> search_paths{};
+    for (const auto &search_path: import_search_paths)
+      search_paths.push_back(fs::path(search_path));
+
+    auto resolved = resolve_import_path(module.abs_path, import->path.string_value,
+                                        search_paths);
+    if (!resolved.has_value()) {
       return std::unexpected(
           Error(std::format("Could not find module `{}`",
                             import->path.string_value),
                 decl->start, decl->end));
     }
-    module.import_abs_paths.push_back(abs_path_of(resolved.string()));
+    module.import_abs_paths.push_back(abs_path_of(resolved->string()));
   }
 
   return module;
 }
 
 static ErrorOr<std::map<std::string, ParsedModule>>
-discover_modules(const std::vector<std::string> &roots) {
+discover_modules(const std::vector<std::string> &roots,
+                 const std::vector<std::string> &import_search_paths) {
   std::map<std::string, ParsedModule> modules{};
   std::queue<std::string> pending{};
 
@@ -116,7 +124,7 @@ discover_modules(const std::vector<std::string> &roots) {
     if (modules.contains(path))
       continue;
 
-    auto parsed = parse_module(path);
+    auto parsed = parse_module(path, import_search_paths);
     if (!parsed.has_value())
       return std::unexpected(parsed.error());
     ParsedModule module = std::move(parsed.value());
@@ -189,12 +197,14 @@ int main(int argc, char *argv[]) {
       opts.print_ast = true;
     } else if (strncmp(opt, "--print-ir", 10) == 0) {
       opts.print_ir = true;
+    } else if (strncmp(opt, "-I", 2) == 0) {
+      opts.import_paths.push_back(argv[i++]);
     } else {
       throw std::runtime_error("illegal option");
     }
   }
 
-  auto discovered = discover_modules(opts.files);
+  auto discovered = discover_modules(opts.files, opts.import_paths);
   if (!discovered.has_value()) {
     print_error("", "", discovered.error());
     return EXIT_FAILURE;
@@ -234,7 +244,7 @@ int main(int argc, char *argv[]) {
     ParsedModule &module = modules.at(path);
 
     Checker checker(module.module_name, module.abs_path, &registry,
-                    module.is_runtime);
+                    module.is_runtime, opts.import_paths);
     ErrorOr<void> check = checker.check_decls(module.decls);
     if (!check.has_value()) {
       print_error(module.source, module.rel_path, check.error());
@@ -257,7 +267,8 @@ int main(int argc, char *argv[]) {
     }
 
     Generator gen(module.decls, module.module_name,
-                  should_mangle_module(module.rel_path));
+                  should_mangle_module(module.rel_path), &registry,
+                  checker.imports());
     gen.gen_decls();
 
     if (opts.print_ir) {

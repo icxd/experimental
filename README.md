@@ -125,9 +125,25 @@ proc main() int {
 }
 ```
 
-Paths are resolved relative to the importing file's directory. The compiler follows imports transitively, type-checks modules in dependency order, and emits mangled linker symbols (`math_add`, `foo_bar`, …). Entry-point `main` and `runtime/ryert.rye` symbols are not mangled.
+Paths are resolved relative to the importing file's directory, then along each `-I` search path:
 
-Call procedures from another module with `module:proc(args)`. Unqualified `proc(args)` refers to the current module only.
+```bash
+./build/rye app.rye -I vendor -O app
+```
+
+The compiler follows imports transitively, type-checks modules in dependency order, and emits mangled linker symbols (`math_add`, `foo_bar`, …). Entry-point `main` and `runtime/ryert.rye` symbols are not mangled.
+
+Imported procedures and constants are available both qualified and unqualified:
+
+```rye
+import "lib/math.rye";
+
+proc main() int {
+  return add(1, 2) + math:TEN;  // unqualified proc, qualified const
+}
+```
+
+Use `module:proc(args)` or `module:CONST` when you need an explicit namespace, or when the same name is exported from multiple imports.
 
 ### Multi-file compilation
 

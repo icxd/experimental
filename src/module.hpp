@@ -3,8 +3,10 @@
 #include <cctype>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <parser/ast.hpp>
 
@@ -50,10 +52,25 @@ inline std::string link_name(std::string_view module, std::string_view symbol,
   return mangle_symbol(module, symbol);
 }
 
-inline fs::path resolve_import_path(const fs::path &importer,
-                                    std::string_view import_path) {
+inline std::optional<fs::path>
+resolve_import_path(const fs::path &importer, std::string_view import_path,
+                    const std::vector<fs::path> &search_paths = {}) {
+  std::vector<fs::path> candidates{};
   fs::path p(import_path);
-  if (p.is_absolute())
-    return fs::weakly_canonical(p);
-  return fs::weakly_canonical(importer.parent_path() / p);
+  if (p.is_absolute()) {
+    candidates.push_back(p);
+  } else {
+    candidates.push_back(importer.parent_path() / p);
+    for (const fs::path &dir: search_paths)
+      candidates.push_back(dir / p);
+  }
+
+  for (const fs::path &candidate: candidates) {
+    std::error_code ec;
+    fs::path canonical = fs::weakly_canonical(candidate, ec);
+    if (!ec && fs::exists(canonical))
+      return canonical;
+  }
+
+  return std::nullopt;
 }
