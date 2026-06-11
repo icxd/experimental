@@ -1,5 +1,7 @@
 #pragma once
 
+#include <deque>
+
 #include <checker/checker.hpp>
 #include <common.hpp>
 #include <ir/ir.hpp>
@@ -7,7 +9,11 @@
 
 class Generator {
 public:
-  Generator(const std::vector<Decl *> &decls) : _decls(decls) {}
+  Generator(const std::vector<Decl *> &decls, std::string_view module_name,
+            bool mangle_symbols) :
+      _decls(decls),
+      _module_name(module_name),
+      _mangle_symbols(mangle_symbols) {}
 
   void gen_decls();
 
@@ -22,9 +28,15 @@ private:
   void gen_decl(Decl *decl);
   void gen_stmt(Stmt *stmt, Function *fn);
   Operand gen_expr(Expr *expr, Function *fn);
+  std::string link_name(std::string_view module, std::string_view symbol,
+                        Linkage linkage) const;
+  std::string_view own_name(std::string name);
 
 private:
   std::vector<Decl *> _decls;
+  std::string _module_name;
+  bool _mangle_symbols = true;
   Builder _builder{};
   std::vector<LoopLabels> _loop_stack;
+  std::deque<std::string> _owned_names;
 };

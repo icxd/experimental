@@ -113,12 +113,28 @@ extern proc some_c_function(x int) int;
 
 The compiler emits `.extern` declarations and relies on the linker to resolve them.
 
+### Modules and imports
+
+Each `.rye` file is a **module** named after its file stem (`foo.rye` → module `foo`). Import other modules with a string path:
+
+```rye
+import "lib/math.rye";
+
+proc main() int {
+  return math:add(2, 40);
+}
+```
+
+Paths are resolved relative to the importing file's directory. The compiler follows imports transitively, type-checks modules in dependency order, and emits mangled linker symbols (`math_add`, `foo_bar`, …). Entry-point `main` and `runtime/ryert.rye` symbols are not mangled.
+
+Call procedures from another module with `module:proc(args)`. Unqualified `proc(args)` refers to the current module only.
+
 ### Multi-file compilation
 
-Pass multiple `.rye` files on the command line. Each file is compiled to an object file under `.rye/`, then linked together:
+Pass one or more entry `.rye` files on the command line. Imported modules are discovered automatically; each file compiles to an object under `.rye/`, then everything links together:
 
 ```bash
-./build/rye file_a.rye file_b.rye -O combined
+./build/rye myprogram.rye -O myprogram
 ```
 
 `runtime/ryert.rye` is always included automatically.

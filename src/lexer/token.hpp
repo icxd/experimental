@@ -20,6 +20,10 @@ enum TokenType {
   TOK_WHEN,
   TOK_BREAK,
   TOK_CONTINUE,
+  TOK_IMPORT,
+
+  TOK_STRING,
+  TOK_COLON,
 
   TOK_OPAREN,
   TOK_CPAREN,
@@ -53,6 +57,7 @@ struct Token {
 
   union {
     std::string_view id_value;
+    std::string_view string_value;
     int64_t int_value;
   };
 
@@ -69,6 +74,9 @@ struct Token {
     case TOK_WHEN:      return std::format("TOK_WHEN");
     case TOK_BREAK:     return std::format("TOK_BREAK");
     case TOK_CONTINUE:  return std::format("TOK_CONTINUE");
+    case TOK_IMPORT:    return std::format("TOK_IMPORT");
+    case TOK_STRING:    return std::format("TOK_STRING({})", string_value);
+    case TOK_COLON:     return std::format("TOK_COLON");
     case TOK_OPAREN:    return std::format("TOK_OPAREN");
     case TOK_CPAREN:    return std::format("TOK_CPAREN");
     case TOK_OBRACE:    return std::format("TOK_OBRACE");

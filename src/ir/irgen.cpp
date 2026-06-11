@@ -1,7 +1,19 @@
 #include <ir/ir.hpp>
 #include <ir/irgen.hpp>
+#include <module.hpp>
 #include <vector>
 #include "parser/ast.hpp"
+
+std::string Generator::link_name(std::string_view module,
+                                 std::string_view symbol,
+                                 Linkage linkage) const {
+  return ::link_name(module, symbol, _mangle_symbols, linkage);
+}
+
+std::string_view Generator::own_name(std::string name) {
+  _owned_names.push_back(std::move(name));
+  return _owned_names.back();
+}
 
 void Generator::gen_decls() {
   for (auto *decl: _decls)
@@ -24,7 +36,9 @@ void Generator::gen_decl(Decl *decl) {
       params.push_back(param.name.id_value);
 
     _builder.reset_labels();
-    Function *fn = _builder.create_function(proc->name.id_value, params);
+  std::string_view fn_name = own_name(
+        link_name(_module_name, proc->name.id_value, proc->linkage));
+    Function *fn = _builder.create_function(fn_name, params);
     fn->linkage = proc->linkage;
     for (const auto &stmt: proc->body)
       gen_stmt(stmt, fn);
@@ -32,6 +46,8 @@ void Generator::gen_decl(Decl *decl) {
     fn->instructions = fold_constants(fn->instructions);
     fn->instructions = fold_temporaries(fn->instructions);
   } break;
+
+  case DECL_IMPORT: break;
 
   case DECL_WHEN: PANIC("unreachable");
   }
@@ -243,7 +259,12 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
   case EXPR_CALL: {
     auto call = std::get<expr::Call *>(expr->data);
     Operand dst = _builder.new_temp();
-    Operand name = Operand::Function(std::string(call->name.id_value));
+    std::string_view module = call->module.has_value()
+                                  ? call->module->id_value
+                                  : _module_name;
+    std::string callee =
+        link_name(module, call->name.id_value, LINK_INTERN);
+    Operand name = Operand::Function(callee);
     std::vector<Operand> args{};
     for (auto *arg: call->arguments)
       args.push_back(gen_expr(arg, fn));

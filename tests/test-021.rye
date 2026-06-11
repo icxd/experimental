@@ -1,0 +1,10 @@
+/// 20
+
+import "lib/math.rye";
+import "lib/other.rye";
+
+proc main() int {
+  var from_math int = math:add(10, 2);
+  var from_other int = other:add(10, 2);
+  return from_math + from_other;
+}

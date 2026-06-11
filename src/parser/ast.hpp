@@ -41,13 +41,17 @@ namespace decl {
     std::vector<Decl *> false_block;
   };
 
+  struct Import {
+    Token path;
+  };
+
 } // namespace decl
 
-enum DeclType { DECL_CONST, DECL_PROC, DECL_WHEN };
+enum DeclType { DECL_CONST, DECL_PROC, DECL_WHEN, DECL_IMPORT };
 struct Decl {
   DeclType type;
   size_t start, end;
-  std::variant<decl::Const *, decl::Proc *, decl::When *> data;
+  std::variant<decl::Const *, decl::Proc *, decl::When *, decl::Import *> data;
 };
 
 namespace stmt {
@@ -165,6 +169,7 @@ namespace expr {
   };
 
   struct Call {
+    std::optional<Token> module;
     Token name;
     std::vector<Expr *> arguments;
   };
@@ -250,7 +255,12 @@ public:
 
     case EXPR_CALL: {
       auto x = std::get<expr::Call *>(data);
-      std::string out = std::format("{}(", x->name.id_value);
+      std::string out;
+      if (x->module.has_value())
+        out = std::format("{}:{}", x->module->id_value, x->name.id_value);
+      else
+        out = std::format("{}", x->name.id_value);
+      out += "(";
       for (size_t i = 0; i < x->arguments.size(); i++) {
         out += x->arguments[i]->to_string();
         if (i + 1 < x->arguments.size())
