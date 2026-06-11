@@ -1,0 +1,11 @@
+/// 42
+
+struct Point {
+  x int;
+  y int;
+}
+
+proc main() int {
+  var p Point = Point{ x = 10, y = 32 };
+  return p.x + p.y;
+}

@@ -179,8 +179,17 @@ ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
   try$(inject_builtin_consts());
   try$(inject_define_consts());
 
+  for (Decl *decl: decls) {
+    if (decl->type == DECL_STRUCT)
+      try$(check_decl(decl, _global_scope));
+  }
+
   for (size_t i = 0; i < decls.size();) {
     Decl *decl = decls[i];
+    if (decl->type == DECL_STRUCT) {
+      ++i;
+      continue;
+    }
     if (decl->type == DECL_WHEN) {
       std::vector<Decl *> expanded = try$(resolve_when_decl(decl, _global_scope));
       decls.erase(decls.begin() + static_cast<std::ptrdiff_t>(i));
@@ -302,8 +311,130 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     decl::Import *import = std::get<decl::Import *>(decl->data);
     return check_import(import, decl->start, decl->end);
   }
+
+  case DECL_STRUCT: {
+    decl::Struct *strukt = std::get<decl::Struct *>(decl->data);
+    return check_struct(strukt, decl->start, decl->end);
+  }
   }
   std::unreachable();
+}
+
+ErrorOr<void> Checker::check_struct(decl::Struct *strukt, size_t start,
+                                    size_t end) {
+  std::string_view name = strukt->name.id_value;
+  if (find_local_struct(name).has_value()) {
+    return std::unexpected(
+        Error(std::format("Redeclaration of struct `{}`", name), start, end));
+  }
+
+  std::set<std::string_view> field_names{};
+  std::vector<CheckedStructField> fields{};
+  size_t offset = 0;
+  for (const decl::StructField &field: strukt->fields) {
+    std::string_view field_name = field.name.id_value;
+    if (field_names.contains(field_name)) {
+      return std::unexpected(
+          Error(std::format("Duplicate field `{}` in struct `{}`", field_name,
+                            name),
+                field.name.start, field.name.end));
+    }
+
+    Type *field_type = try$(check_type(field.type, _global_scope));
+    field_names.insert(field_name);
+    fields.push_back(CheckedStructField{field_name, field_type, offset});
+    offset += type_size(field_type);
+  }
+
+  _structs.push_back(CheckedStruct{name, fields, offset});
+  return {};
+}
+
+size_t Checker::type_size(Type *type) {
+  switch (type->type) {
+  case TYPE_VOID: return 0;
+  case TYPE_BOOL:
+  case TYPE_INT:
+  case TYPE_BYTE:
+  case TYPE_PTR:  return 8;
+  case TYPE_STRUCT: {
+    std::string_view name = std::get<type::Struct *>(type->data)->name;
+    if (auto local = find_local_struct(name); local.has_value())
+      return local->size;
+    return 8;
+  }
+  }
+  std::unreachable();
+}
+
+std::optional<CheckedStruct> Checker::find_local_struct(std::string_view name) {
+  for (const auto &strukt: _structs) {
+    if (strukt.name == name)
+      return strukt;
+  }
+  return std::nullopt;
+}
+
+ErrorOr<CheckedStruct> Checker::find_prelude_struct(std::string_view name,
+                                                      size_t start,
+                                                      size_t end) {
+  if (_registry == nullptr) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared type `{}`", name), start, end));
+  }
+
+  for (const auto &[module_name, module]: _registry->modules()) {
+    if (!is_prelude_module(module.path))
+      continue;
+    auto strukt = _registry->find_struct(module_name, name);
+    if (strukt.has_value())
+      return strukt.value();
+  }
+
+  return std::unexpected(
+      Error(std::format("Use of undeclared type `{}`", name), start, end));
+}
+
+ErrorOr<CheckedStruct> Checker::find_imported_struct(std::string_view name,
+                                                     size_t start,
+                                                     size_t end) {
+  if (_registry == nullptr || _imports.empty()) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared type `{}`", name), start, end));
+  }
+
+  std::optional<CheckedStruct> found;
+  for (const auto &import_module: _imports) {
+    auto strukt = _registry->find_struct(import_module, name);
+    if (!strukt.has_value())
+      continue;
+    if (found.has_value()) {
+      return std::unexpected(
+          Error(std::format("Ambiguous import for type `{}`", name), start,
+                end)
+              .with_hint("Multiple imported modules export a struct with this "
+                         "name; define the type locally"));
+    }
+    found = strukt;
+  }
+
+  if (!found.has_value()) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared type `{}`", name), start, end));
+  }
+
+  return *found;
+}
+
+ErrorOr<CheckedStruct> Checker::resolve_struct(std::string_view name,
+                                               size_t start, size_t end) {
+  if (auto local = find_local_struct(name); local.has_value())
+    return *local;
+
+  if (auto prelude = find_prelude_struct(name, start, end); prelude.has_value())
+    return prelude.value();
+
+  return find_imported_struct(name, start, end);
 }
 
 ErrorOr<void> Checker::check_import(decl::Import *import, size_t start,
@@ -454,14 +585,26 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     Type *expr_type = try$(check_expr(var->value, scope));
 
     if (!type_eq(type, expr_type)) {
-      return std::unexpected(
-          Error(std::format(
-                    "Cannot assign value of type `{}` to variable of type `{}`",
-                    expr_type->to_string(), type->to_string()),
-                var->value->start, var->value->end)
-              .with_hint(std::format("Expected `{}`, found `{}`",
-                                     type->to_string(),
-                                     expr_type->to_string())));
+      if (type->type == TYPE_BYTE && expr_type->type == TYPE_INT &&
+          var->value->type == EXPR_INT) {
+        int64_t value = std::get<expr::Int *>(var->value->data)->value;
+        if (value < 0 || value > 255) {
+          return std::unexpected(
+              Error(std::format("Byte value `{}` is out of range", value),
+                    var->value->start, var->value->end)
+                  .with_hint("Expected a value between 0 and 255"));
+        }
+        expr_type = type;
+      } else {
+        return std::unexpected(
+            Error(std::format(
+                      "Cannot assign value of type `{}` to variable of type `{}`",
+                      expr_type->to_string(), type->to_string()),
+                  var->value->start, var->value->end)
+                .with_hint(std::format("Expected `{}`, found `{}`",
+                                       type->to_string(),
+                                       expr_type->to_string())));
+      }
     }
 
     var->value->expr_type = type;
@@ -495,15 +638,19 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
       Expr *value = ret->value.value();
       Type *type = try$(check_expr(value, scope));
       if (!type_eq(curr_proc.ret_type, type)) {
-        auto error = Error("Return type mismatch", ret->value.value()->start,
-                           ret->value.value()->end)
-                         .with_hint(std::format("Expected `{}`, found `{}`",
-                                                curr_proc.ret_type->to_string(),
-                                                type->to_string()));
-        auto fix = suggest_fix(curr_proc.ret_type, type, value);
-        if (fix.has_value())
-          error.add_help(ErrorHelp(*fix, value->start, value->end));
-        return std::unexpected(error);
+        if (curr_proc.ret_type->type == TYPE_INT && type->type == TYPE_BYTE)
+          type = curr_proc.ret_type;
+        else {
+          auto error = Error("Return type mismatch", ret->value.value()->start,
+                             ret->value.value()->end)
+                           .with_hint(std::format("Expected `{}`, found `{}`",
+                                                  curr_proc.ret_type->to_string(),
+                                                  type->to_string()));
+          auto fix = suggest_fix(curr_proc.ret_type, type, value);
+          if (fix.has_value())
+            error.add_help(ErrorHelp(*fix, value->start, value->end));
+          return std::unexpected(error);
+        }
       }
 
       ret->value.value()->expr_type = type;
@@ -768,6 +915,110 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
 
   case EXPR_COMPTIME_CALL:
     std::unreachable();
+
+  case EXPR_FIELD: {
+    expr::Field *field = std::get<expr::Field *>(expr->data);
+    Type *base_type = try$(check_expr(field->base, scope));
+    field->base->expr_type = base_type;
+
+    if (base_type->type != TYPE_STRUCT) {
+      return std::unexpected(
+          Error(std::format("Cannot access field `{}` on non-struct type `{}`",
+                            field->field.id_value, base_type->to_string()),
+                expr->start, expr->end));
+    }
+
+    std::string_view struct_name =
+        std::get<type::Struct *>(base_type->data)->name;
+    CheckedStruct strukt = try$(resolve_struct(struct_name, expr->start, expr->end));
+
+    for (const auto &struct_field: strukt.fields) {
+      if (struct_field.name == field->field.id_value) {
+        type = struct_field.type;
+        break;
+      }
+    }
+
+    if (type == nullptr) {
+      return std::unexpected(
+          Error(std::format("Struct `{}` has no field `{}`", struct_name,
+                            field->field.id_value),
+                field->field.start, field->field.end));
+    }
+    break;
+  }
+
+  case EXPR_STRUCT_LIT: {
+    expr::StructLit *lit = std::get<expr::StructLit *>(expr->data);
+    CheckedStruct strukt =
+        try$(resolve_struct(lit->type_name.id_value, expr->start, expr->end));
+
+    std::set<std::string_view> provided{};
+    for (const expr::StructLitField &field: lit->fields) {
+      if (provided.contains(field.name.id_value)) {
+        return std::unexpected(
+            Error(std::format("Duplicate field `{}` in struct literal",
+                              field.name.id_value),
+                  field.name.start, field.name.end));
+      }
+      provided.insert(field.name.id_value);
+
+      std::optional<Type *> expected_type = std::nullopt;
+      for (const auto &struct_field: strukt.fields) {
+        if (struct_field.name == field.name.id_value) {
+          expected_type = struct_field.type;
+          break;
+        }
+      }
+
+      if (!expected_type.has_value()) {
+        return std::unexpected(
+            Error(std::format("Struct `{}` has no field `{}`", strukt.name,
+                              field.name.id_value),
+                  field.name.start, field.name.end));
+      }
+
+      Type *value_type = try$(check_expr(field.value, scope));
+      field.value->expr_type = value_type;
+      if (!type_eq(*expected_type, value_type)) {
+        return std::unexpected(
+            Error(std::format("Field `{}` expects type `{}`, found `{}`",
+                              field.name.id_value,
+                              (*expected_type)->to_string(),
+                              value_type->to_string()),
+                  field.value->start, field.value->end));
+      }
+    }
+
+    for (const auto &struct_field: strukt.fields) {
+      if (!provided.contains(struct_field.name)) {
+        return std::unexpected(
+            Error(std::format("Missing field `{}` in struct literal",
+                              struct_field.name),
+                  expr->start, expr->end));
+      }
+    }
+
+    type = new Type{
+        .type = TYPE_STRUCT,
+        .start = expr->start,
+        .end = expr->end,
+        .data = new type::Struct{strukt.name},
+    };
+    break;
+  }
+
+  case EXPR_STRING: {
+    CheckedStruct string_struct =
+        try$(resolve_struct("String", expr->start, expr->end));
+    type = new Type{
+        .type = TYPE_STRUCT,
+        .start = expr->start,
+        .end = expr->end,
+        .data = new type::Struct{string_struct.name},
+    };
+    break;
+  }
   }
 
   try$(fold_expr(expr, scope, nullptr));
@@ -780,6 +1031,7 @@ ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
   case TYPE_VOID: return type;
   case TYPE_BOOL: return type;
   case TYPE_INT:  return type;
+  case TYPE_BYTE: return type;
   case TYPE_PTR:  {
     auto ptr = std::get<type::Ptr *>(type->data);
     Type *inner = try$(check_type(ptr->inner, scope));
@@ -789,6 +1041,11 @@ ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
         .end = type->end,
         .data = new type::Ptr{inner},
     };
+  }
+  case TYPE_STRUCT: {
+    auto strukt = std::get<type::Struct *>(type->data);
+    try$(resolve_struct(strukt->name, type->start, type->end));
+    return type;
   }
   }
   std::unreachable();
@@ -1313,6 +1570,7 @@ bool Checker::type_eq(Type *a, Type *b) {
   case TYPE_VOID: return b->type == TYPE_VOID;
   case TYPE_BOOL: return b->type == TYPE_BOOL;
   case TYPE_INT:  return b->type == TYPE_INT;
+  case TYPE_BYTE: return b->type == TYPE_BYTE;
   case TYPE_PTR:  {
     Type *a_inner = std::get<type::Ptr *>(a->data)->inner;
     if (b->type != TYPE_PTR)
@@ -1320,6 +1578,13 @@ bool Checker::type_eq(Type *a, Type *b) {
 
     Type *b_inner = std::get<type::Ptr *>(b->data)->inner;
     return type_eq(a_inner, b_inner);
+  }
+  case TYPE_STRUCT: {
+    if (b->type != TYPE_STRUCT)
+      return false;
+    auto *a_struct = std::get<type::Struct *>(a->data);
+    auto *b_struct = std::get<type::Struct *>(b->data);
+    return a_struct->name == b_struct->name;
   }
   }
   std::unreachable();

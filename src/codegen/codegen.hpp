@@ -50,7 +50,8 @@ class Emitter {
 public:
   static Emitter *get_emitter(Target target,
                               const std::vector<Constant> &constants,
-                              const std::vector<Function *> &functions);
+                              const std::vector<Function *> &functions,
+                              const std::vector<RodataEntry> &rodata = {});
 
   virtual void emit() = 0;
   virtual const std::string &output() const = 0;

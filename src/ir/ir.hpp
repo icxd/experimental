@@ -93,6 +93,9 @@ enum Opcode {
   OP_ASSIGN, // a = b
   OP_ADDROF, // a = &b
   OP_DEREF, // a = *b
+  OP_LOAD_OFFSET, // a = *(b + offset)
+  OP_STORE_OFFSET, // *(b + offset) = c
+  OP_LOAD_LABEL, // a = &label
   OP_ADD, // a = b + c
   OP_SUB, // a = b - c
   OP_MUL, // a = b * c
@@ -126,6 +129,17 @@ struct Instruction {
              srcs[0].to_string();
     case OP_DEREF:
       return dst->to_string() + ANSI_RED " = *" ANSI_RESET +
+             srcs[0].to_string();
+    case OP_LOAD_OFFSET:
+      return dst->to_string() + ANSI_RED " = *(" ANSI_RESET +
+             srcs[0].to_string() + ANSI_RED " + " ANSI_RESET +
+             srcs[1].to_string() + ANSI_RED ")\033[0m";
+    case OP_STORE_OFFSET:
+      return ANSI_RED "*(" ANSI_RESET + srcs[0].to_string() + ANSI_RED " + " +
+             ANSI_RESET + srcs[1].to_string() + ANSI_RED ") = " ANSI_RESET +
+             srcs[2].to_string();
+    case OP_LOAD_LABEL:
+      return dst->to_string() + ANSI_RED " = &" ANSI_RESET +
              srcs[0].to_string();
     case OP_ADD:
       return dst->to_string() + ANSI_RED " = " ANSI_RESET +
@@ -181,6 +195,7 @@ struct Function {
   std::string_view name;
   std::vector<std::string_view> parameters;
   std::vector<Instruction> instructions;
+  std::map<std::string, size_t> variable_sizes;
   Linkage linkage = LINK_INTERN;
 
   void print() const {
@@ -214,6 +229,17 @@ public:
   }
   void deref(Operand dst, Operand src) {
     append(Instruction(OP_DEREF, dst, {src}));
+  }
+  void load_offset(Operand dst, Operand base, int64_t offset) {
+    append(Instruction(OP_LOAD_OFFSET, dst,
+                       {base, Operand::ConstantInt(offset)}));
+  }
+  void store_offset(Operand base, int64_t offset, Operand value) {
+    append(Instruction(OP_STORE_OFFSET, std::nullopt,
+                       {base, Operand::ConstantInt(offset), value}));
+  }
+  void load_label(Operand dst, Operand label) {
+    append(Instruction(OP_LOAD_LABEL, dst, {label}));
   }
   void add(Operand dst, Operand src1, Operand src2) {
     append(Instruction(OP_ADD, dst, {src1, src2}));
@@ -275,6 +301,11 @@ struct Constant {
   }
 };
 
+struct RodataEntry {
+  std::string label;
+  std::string bytes;
+};
+
 class Builder {
 public:
   Function *create_function(std::string_view name,
@@ -287,10 +318,17 @@ public:
     _constants.push_back(Constant{name, value});
   }
 
+  std::string create_rodata(std::string bytes) {
+    std::string label = std::format(".Lstr{}", _rodata_counter++);
+    _rodata.push_back(RodataEntry{label, std::move(bytes)});
+    return label;
+  }
+
   const std::vector<Function *> &functions() const { return _functions; }
 
   const std::vector<Constant> &constants() const { return _constants; }
   std::vector<Constant> &constants() { return _constants; }
+  const std::vector<RodataEntry> &rodata() const { return _rodata; }
 
   void print() const;
 
@@ -306,7 +344,9 @@ private:
   std::vector<Function *> _functions{};
   size_t _temp_counter = 0;
   size_t _label_counter = 0;
+  size_t _rodata_counter = 0;
   std::vector<Constant> _constants{};
+  std::vector<RodataEntry> _rodata{};
 };
 
 std::vector<Instruction> fold_constants(const std::vector<Instruction> &input);

@@ -32,6 +32,11 @@ private:
   void gen_decl(Decl *decl);
   void gen_stmt(Stmt *stmt, Function *fn);
   Operand gen_expr(Expr *expr, Function *fn);
+  void init_struct_var(Function *fn, const std::string &name, Type *type,
+                       Expr *value);
+  void store_struct_fields(Function *fn, Operand base, Expr *value);
+  std::optional<CheckedStruct> find_struct(std::string_view name);
+  size_t struct_size(Type *type);
   std::string link_name(std::string_view module, std::string_view symbol,
                         Linkage linkage) const;
   std::string_view own_name(std::string name);
@@ -45,4 +50,5 @@ private:
   Builder _builder{};
   std::vector<LoopLabels> _loop_stack;
   std::deque<std::string> _owned_names;
+  size_t _struct_tmp_counter = 0;
 };

@@ -4,32 +4,75 @@
 #include <codegen/regalloc.hpp>
 #include <ir/ir.hpp>
 
+static size_t variable_stack_size(const Function &function,
+                                  std::string_view name) {
+  auto it = function.variable_sizes.find(std::string(name));
+  if (it != function.variable_sizes.end())
+    return it->second;
+  return 8;
+}
+
+static size_t compute_locals_size(const Function &function) {
+  std::set<std::string> local_vars;
+  for (const auto &instr: function.instructions) {
+    if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE)
+      local_vars.insert(instr.dst->name);
+    for (const auto &src: instr.srcs) {
+      if (src.type == OPERAND_VARIABLE)
+        local_vars.insert(src.name);
+    }
+  }
+
+  size_t total = 0;
+  for (const auto &name: local_vars)
+    total += variable_stack_size(function, name);
+  return total;
+}
+
+static void emit_rodata_section(std::string &output,
+                                const std::vector<RodataEntry> &rodata) {
+  if (rodata.empty())
+    return;
+  output += ".section .rodata\n";
+  for (const auto &entry: rodata) {
+    output += entry.label + ":\n";
+    output += "  .asciz \"";
+    for (unsigned char ch: entry.bytes) {
+      if (ch == '\n')
+        output += "\\n";
+      else if (ch == '\t')
+        output += "\\t";
+      else if (ch == '\r')
+        output += "\\r";
+      else if (ch == '\\')
+        output += "\\\\";
+      else if (ch == '"')
+        output += "\\\"";
+      else if (ch == '\0')
+        break;
+      else if (std::isprint(ch))
+        output += static_cast<char>(ch);
+      else
+        output += std::format("\\{:03o}", ch);
+    }
+    output += "\"\n";
+  }
+}
+
 void Aarch64MacosGasEmitter::emit() {
   _output += ".text\n";
   for (const auto *function: _functions)
     emit_function(*function);
-}
-
-static size_t count_local_variables(const Function &function) {
-  std::set<std::string> local_vars;
-  for (const auto &instr: function.instructions) {
-    if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE) {
-      local_vars.insert(instr.dst->name);
-    }
-    for (const auto &src: instr.srcs) {
-      if (src.type == OPERAND_VARIABLE) {
-        local_vars.insert(src.name);
-      }
-    }
-  }
-  return local_vars.size();
+  emit_rodata_section(_output, _rodata);
 }
 
 void Aarch64MacosGasEmitter::emit_function(Function function) {
   std::string name(function.name);
   _current_fn = name;
+  _current_function = &function;
   _stack_loc.clear();
   _spill_loc.clear();
+  _var_sizes.clear();
   _next_stack_loc = 16;
 
   if (function.linkage == LINK_INTERN) {
@@ -42,17 +85,10 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
         spill_count++;
     }
 
-    size_t local_vars = count_local_variables(function);
-    size_t stack_slots = local_vars + function.parameters.size() + spill_count;
-    size_t stack_size = stack_slots * 16;
-    if (stack_size < 16)
-      stack_size = 16;
+    size_t local_vars = compute_locals_size(function) > 0 ? 1 : 0;
 
     _output += ".globl " + name + "\n";
     _output += name + ":\n";
-
-    // If the function contains a call instruction, we need to ensure that
-    // the stack pointer is aligned to 16 bytes.
 
     bool has_call_instruction = false;
     for (const auto &instr: function.instructions) {
@@ -62,12 +98,54 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
       }
     }
 
+    auto layout_locals = [&]() {
+      for (const auto &instr: function.instructions) {
+        auto layout_var = [&](const std::string &var_name) {
+          if (_stack_loc.contains(var_name))
+            return;
+          size_t size = variable_stack_size(function, var_name);
+          _stack_loc.insert({var_name, _next_stack_loc});
+          _var_sizes.insert({var_name, size});
+          _next_stack_loc += size;
+        };
+        if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE)
+          layout_var(instr.dst->name);
+        for (const auto &src: instr.srcs) {
+          if (src.type == OPERAND_VARIABLE)
+            layout_var(src.name);
+        }
+      }
+    };
+
+    for (size_t i = 0; i < function.parameters.size(); i++) {
+      std::string_view param = function.parameters[i];
+      _stack_loc.insert({std::string(param), _next_stack_loc});
+      _next_stack_loc += 16;
+    }
+
+    for (const auto &[temp, alloc]: regmap) {
+      if (alloc.spilled) {
+        _spill_loc[temp] = _next_stack_loc;
+        _next_stack_loc += 8;
+      }
+    }
+
+    layout_locals();
+
+    size_t stack_size = _next_stack_loc;
+    if (stack_size < 16)
+      stack_size = 16;
+
     if (has_call_instruction) {
       _output += "  stp x29, x30, [sp, -" + std::to_string(stack_size) + "]!\n";
       _output += "  mov x29, sp\n";
     } else if (local_vars > 0) {
       _output += "  sub sp, sp, " + std::to_string(stack_size) + "\n";
     }
+
+    _next_stack_loc = 16;
+    _stack_loc.clear();
+    _var_sizes.clear();
 
     for (size_t i = 0; i < function.parameters.size(); i++) {
       std::string_view param = function.parameters[i];
@@ -83,6 +161,8 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
         _next_stack_loc += 8;
       }
     }
+
+    layout_locals();
 
     _end_label = ".L_end_" + name;
     for (const auto &instr: function.instructions) {
@@ -105,9 +185,23 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
 void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   _output += "  // " + instr.to_string() + "\n";
 
-  if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE) {
-    _stack_loc.insert({instr.dst->name, _next_stack_loc});
-    _next_stack_loc += 8;
+  auto ensure_var = [&](const std::string &var_name) {
+    if (_stack_loc.contains(var_name))
+      return;
+    size_t size =
+        _current_function != nullptr
+            ? variable_stack_size(*_current_function, var_name)
+            : 8;
+    _stack_loc.insert({var_name, _next_stack_loc});
+    _var_sizes.insert({var_name, size});
+    _next_stack_loc += size;
+  };
+
+  if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE)
+    ensure_var(instr.dst->name);
+  for (const auto &src: instr.srcs) {
+    if (src.type == OPERAND_VARIABLE)
+      ensure_var(src.name);
   }
 
   switch (instr.opcode) {
@@ -153,6 +247,49 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
       _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
+  } break;
+
+  case OP_LOAD_OFFSET: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand base = instr.srcs[0];
+    int64_t offset = instr.srcs[1].int_value;
+    if (base.type == OPERAND_VARIABLE) {
+      size_t base_off = _stack_loc.at(base.name);
+      _output += "  ldr x9, [sp, #" + std::to_string(base_off + offset) +
+                 "]\n";
+    } else {
+      _output += "  ldr x10, " + emit_value(base) + "\n";
+      if (offset != 0)
+        _output += "  add x10, x10, #" + std::to_string(offset) + "\n";
+      _output += "  ldr x9, [x10]\n";
+    }
+    store_scratch(dst, "x9");
+  } break;
+
+  case OP_STORE_OFFSET: {
+    Operand base = instr.srcs[0];
+    int64_t offset = instr.srcs[1].int_value;
+    Operand value = instr.srcs[2];
+    _output += "  ldr x11, " + emit_value(value) + "\n";
+    if (base.type == OPERAND_VARIABLE) {
+      size_t base_off = _stack_loc.at(base.name);
+      _output += "  str x11, [sp, #" + std::to_string(base_off + offset) +
+                 "]\n";
+    } else {
+      _output += "  ldr x10, " + emit_value(base) + "\n";
+      if (offset != 0)
+        _output += "  add x10, x10, #" + std::to_string(offset) + "\n";
+      _output += "  str x11, [x10]\n";
+    }
+  } break;
+
+  case OP_LOAD_LABEL: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    _output += "  adrp x9, " + emit_operand(instr.srcs[0]) + "@PAGE\n";
+    _output += "  add x9, x9, " + emit_operand(instr.srcs[0]) + "@PAGEOFF\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_ADD: {

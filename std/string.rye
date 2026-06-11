@@ -1,0 +1,4 @@
+struct String {
+  ptr *byte;
+  len int;
+}

@@ -60,6 +60,8 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_CONTINUE;
     else if (id == "import")
       type = TOK_IMPORT;
+    else if (id == "struct")
+      type = TOK_STRUCT;
 
     return Token{
         .type = type,
@@ -120,6 +122,7 @@ ErrorOr<Token> Lexer::next_token() {
   case '<': return double_char_token('=', TOK_LTE, TOK_LT);
   case '>': return double_char_token('=', TOK_GTE, TOK_GT);
   case ':': return single_char_token(TOK_COLON);
+  case '.': return single_char_token(TOK_DOT);
   case '&': return double_char_token('&', TOK_AMPAMP, TOK_AMPERSAND);
   case '|':
     if (_pos + 1 < _source.size() && peek(1) == '|')

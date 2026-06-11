@@ -186,6 +186,7 @@ int main(int argc, char *argv[]) {
 
   Opts opts;
   opts.files.push_back("runtime/ryert.rye");
+  opts.files.push_back("std/string.rye");
 
   for (int i = 0; i < argc;) {
     char *opt = argv[i++];
@@ -271,6 +272,7 @@ int main(int argc, char *argv[]) {
         .path = module.rel_path,
         .procs = checker.procs(),
         .consts = checker.consts(),
+        .structs = checker.structs(),
     });
 
     if (opts.print_ast) {
@@ -302,7 +304,8 @@ int main(int argc, char *argv[]) {
     }
     Target target = codegen_target.value();
     std::unique_ptr<Emitter> emitter(Emitter::get_emitter(
-        target, gen.builder().constants(), gen.builder().functions()));
+        target, gen.builder().constants(), gen.builder().functions(),
+        gen.builder().rodata()));
     emitter->emit();
 
     fs::path dir = fs::current_path() / ".rye";

@@ -13,6 +13,7 @@ struct ModuleSymbols {
   std::string path;
   std::vector<CheckedProc> procs;
   std::vector<CheckedConst> consts;
+  std::vector<CheckedStruct> structs;
 };
 
 class ModuleRegistry {
@@ -45,6 +46,18 @@ public:
     for (const auto &constant: it->second.consts) {
       if (constant.name == name)
         return constant;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<CheckedStruct> find_struct(std::string_view module,
+                                           std::string_view name) const {
+    auto it = _modules.find(std::string(module));
+    if (it == _modules.end())
+      return std::nullopt;
+    for (const auto &strukt: it->second.structs) {
+      if (strukt.name == name)
+        return strukt;
     }
     return std::nullopt;
   }

@@ -107,6 +107,28 @@ struct Error {
   }
 };
 
+static std::string unescape_string(std::string_view raw) {
+  std::string out;
+  out.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); i++) {
+    if (raw[i] == '\\' && i + 1 < raw.size()) {
+      char next = raw[++i];
+      switch (next) {
+      case 'n':  out += '\n'; break;
+      case 't':  out += '\t'; break;
+      case 'r':  out += '\r'; break;
+      case '\\': out += '\\'; break;
+      case '"':  out += '"'; break;
+      case '0':  out += '\0'; break;
+      default:   out += next; break;
+      }
+    } else {
+      out += raw[i];
+    }
+  }
+  return out;
+}
+
 static std::vector<std::string_view> split(std::string_view str,
                                            char delimiter) {
   std::vector<std::string_view> result;
@@ -168,6 +190,17 @@ static void print_error_help(std::string_view source, ErrorHelp help) {
 
 static void print_error(std::string_view source, std::string_view file_path,
                         Error error) {
+  if (source.empty() || error.start >= source.size()) {
+    std::println("\033[31;1mError: \033[0m{}", error.message);
+    if (!file_path.empty())
+      std::println("\033[34;1m --> {}\033[0m", file_path);
+    if (!error.hint.empty())
+      std::println("{}", error.hint);
+    for (const auto &help: error.helps)
+      std::println("\033[1;36mHelp:\033[0m {}", help.message);
+    return;
+  }
+
   size_t line = 1, column = 1;
   for (size_t i = 0; i < error.start; i++) {
     if (source.at(i) == '\n') {

@@ -21,6 +21,11 @@ inline bool is_runtime_module(const std::string &path) {
   return p.filename() == "ryert.rye";
 }
 
+inline bool is_prelude_module(const std::string &path) {
+  fs::path p(path);
+  return p.filename() == "string.rye";
+}
+
 inline bool should_mangle_module(const std::string &path) {
   return !is_runtime_module(path);
 }
