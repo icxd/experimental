@@ -419,16 +419,12 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
         });
       }
 
-      if (module.has_value()) {
-        return std::unexpected(
-            Error("Expected `(` after qualified name", name.start, name.end));
-      }
-
       return _arena.create<Expr>(Expr{
           .type = EXPR_VAR,
           .start = var.start,
-          .end = var.end,
-          .data = _arena.create<expr::Var>(expr::Var{.var = var}),
+          .end = name.end,
+          .data = _arena.create<expr::Var>(
+              expr::Var{.module = module, .var = name}),
       });
     }
   } else if (peek().type == TOK_INT) {

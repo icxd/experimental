@@ -130,6 +130,7 @@ namespace expr {
   };
 
   struct Var {
+    std::optional<Token> module;
     Token var;
   };
 
@@ -170,6 +171,7 @@ namespace expr {
 
   struct Call {
     std::optional<Token> module;
+    std::optional<std::string> resolved_module;
     Token name;
     std::vector<Expr *> arguments;
   };
@@ -229,6 +231,8 @@ public:
 
     case EXPR_VAR: {
       auto x = std::get<expr::Var *>(data);
+      if (x->module.has_value())
+        return std::format("{}:{}", x->module->id_value, x->var.id_value);
       return std::format("{}", x->var.id_value);
     }
 

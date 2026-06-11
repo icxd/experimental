@@ -154,21 +154,27 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
 
 ErrorOr<void> Checker::check_import(decl::Import *import, size_t start,
                                     size_t end) {
-  fs::path resolved =
-      resolve_import_path(_file_path, import->path.string_value);
-  if (!fs::exists(resolved)) {
+  std::vector<fs::path> search_paths{};
+  for (const auto &path: _import_search_paths)
+    search_paths.push_back(fs::path(path));
+
+  auto resolved =
+      resolve_import_path(_file_path, import->path.string_value, search_paths);
+  if (!resolved.has_value()) {
     return std::unexpected(
         Error(std::format("Could not find module `{}`", import->path.string_value),
-              start, end));
+              start, end)
+            .with_hint("Paths are resolved relative to the importing file, "
+                       "then along each `-I` search path"));
   }
 
-  std::string import_module = module_name_from_path(resolved);
+  std::string import_module = module_name_from_path(*resolved);
   if (_registry == nullptr || !_registry->has_module(import_module)) {
     return std::unexpected(
         Error(std::format("Module `{}` is not available (import `{}` resolves "
                            "to `{}`)",
                            import_module, import->path.string_value,
-                           resolved.string()),
+                           resolved->string()),
               start, end)
             .with_hint("Imported modules must be compiled before the importer"));
   }
@@ -376,17 +382,35 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
   case EXPR_VAR:  {
     expr::Var *var = std::get<expr::Var *>(expr->data);
 
-    auto const_ = find_const(var->var.id_value);
-    if (const_.has_value())
+    if (var->module.has_value()) {
+      auto const_ =
+          find_qualified_const(var->module->id_value, var->var.id_value);
+      if (!const_.has_value()) {
+        return std::unexpected(
+            Error(std::format("Use undeclared constant `{}:{}`",
+                              var->module->id_value, var->var.id_value),
+                  expr->start, expr->end));
+      }
       return const_->type;
+    }
+
+    for (const auto &local: _consts) {
+      if (local.name == var->var.id_value)
+        return local.type;
+    }
 
     auto found = scope->find_var(var->var.id_value);
     if (found.has_value())
       return found.value();
 
+    if (!_imports.empty()) {
+      CheckedConst imported =
+          try$(find_imported_const(var->var.id_value, expr->start, expr->end));
+      return imported.type;
+    }
+
     return std::unexpected(
         Error(std::format("Use undeclared variable `{}`", var->var.id_value),
-
               expr->start, expr->end));
   }
 
@@ -503,13 +527,10 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
       qualified_name = std::string(call->name.id_value);
       proc = find_local_proc(call->name.id_value);
       if (!proc.has_value()) {
-        return std::unexpected(
-            Error(std::format("Use undeclared procedure `{}`", qualified_name),
-                  expr->start, expr->end)
-                .with_hint(std::format(
-                    "Procedures from other modules must be called as "
-                    "`module:{}`",
-                    call->name.id_value)));
+        auto imported = try$(find_imported_proc(call->name.id_value, expr->start,
+                                               expr->end));
+        proc = imported.first;
+        call->resolved_module = imported.second;
       }
     }
 
@@ -586,9 +607,28 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
 
   case EXPR_VAR:  {
     auto var = std::get<expr::Var *>(expr->data);
-    auto constant = find_const(var->var.id_value);
-    if (constant.has_value())
+    if (var->module.has_value()) {
+      auto constant =
+          find_qualified_const(var->module->id_value, var->var.id_value);
+      if (!constant.has_value()) {
+        return std::unexpected(
+            Error(std::format("Use undeclared constant `{}:{}`",
+                              var->module->id_value, var->var.id_value),
+                  expr->start, expr->end));
+      }
       return constant->expr;
+    }
+
+    for (const auto &local: _consts) {
+      if (local.name == var->var.id_value)
+        return local.expr;
+    }
+
+    if (!_imports.empty()) {
+      CheckedConst imported =
+          try$(find_imported_const(var->var.id_value, expr->start, expr->end));
+      return imported.expr;
+    }
 
     return std::unexpected(
         Error(std::format("Use undeclared constant `{}`", var->var.id_value),
@@ -741,4 +781,77 @@ std::optional<CheckedConst> Checker::find_const(std::string_view name) {
   }
 
   return std::nullopt;
+}
+
+std::optional<CheckedConst>
+Checker::find_qualified_const(std::string_view module, std::string_view name) {
+  if (_registry == nullptr)
+    return std::nullopt;
+  return _registry->find_const(module, name);
+}
+
+ErrorOr<std::pair<CheckedProc, std::string>>
+Checker::find_imported_proc(std::string_view name, size_t start, size_t end) {
+  if (_registry == nullptr || _imports.empty()) {
+    return std::unexpected(
+        Error(std::format("Use undeclared procedure `{}`", name), start, end));
+  }
+
+  std::optional<CheckedProc> found;
+  std::optional<std::string> found_module;
+  for (const auto &import_module: _imports) {
+    auto proc = find_qualified_proc(import_module, name);
+    if (!proc.has_value())
+      continue;
+    if (found.has_value()) {
+      return std::unexpected(
+          Error(std::format("Ambiguous import for procedure `{}`", name),
+                start, end)
+              .with_hint("Multiple imported modules export a procedure with "
+                         "this name; use a qualified call"));
+    }
+    found = proc;
+    found_module = import_module;
+  }
+
+  if (!found.has_value()) {
+    return std::unexpected(
+        Error(std::format("Use undeclared procedure `{}`", name), start, end)
+            .with_hint("Import the module that defines this procedure, or "
+                       "call it with `module:proc`"));
+  }
+
+  return std::make_pair(*found, *found_module);
+}
+
+ErrorOr<CheckedConst> Checker::find_imported_const(std::string_view name,
+                                                   size_t start, size_t end) {
+  if (_registry == nullptr || _imports.empty()) {
+    return std::unexpected(
+        Error(std::format("Use undeclared constant `{}`", name), start, end));
+  }
+
+  std::optional<CheckedConst> found;
+  std::optional<std::string> found_module;
+  for (const auto &import_module: _imports) {
+    auto constant = find_qualified_const(import_module, name);
+    if (!constant.has_value())
+      continue;
+    if (found.has_value()) {
+      return std::unexpected(
+          Error(std::format("Ambiguous import for constant `{}`", name), start,
+                end)
+              .with_hint("Multiple imported modules export a constant with "
+                         "this name; use `module:const`"));
+    }
+    found = constant;
+    found_module = import_module;
+  }
+
+  if (!found.has_value()) {
+    return std::unexpected(
+        Error(std::format("Use undeclared constant `{}`", name), start, end));
+  }
+
+  return *found;
 }

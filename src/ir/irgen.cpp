@@ -165,6 +165,22 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
   case EXPR_VAR: {
     auto var = std::get<expr::Var *>(expr->data);
 
+    if (var->module.has_value() && _registry != nullptr) {
+      auto imported = _registry->find_const(var->module->id_value,
+                                            var->var.id_value);
+      if (imported.has_value())
+        return gen_expr(imported->expr, fn);
+    }
+
+    if (!var->module.has_value() && _registry != nullptr) {
+      for (const auto &import_module: _imports) {
+        auto imported =
+            _registry->find_const(import_module, var->var.id_value);
+        if (imported.has_value())
+          return gen_expr(imported->expr, fn);
+      }
+    }
+
     auto constant = _builder.find_constant(var->var.id_value);
     if (constant.has_value())
       return Operand::Constant(std::string(constant->name));
@@ -259,9 +275,11 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
   case EXPR_CALL: {
     auto call = std::get<expr::Call *>(expr->data);
     Operand dst = _builder.new_temp();
-    std::string_view module = call->module.has_value()
-                                  ? call->module->id_value
-                                  : _module_name;
+    std::string_view module = _module_name;
+    if (call->module.has_value())
+      module = call->module->id_value;
+    else if (call->resolved_module.has_value())
+      module = *call->resolved_module;
     std::string callee =
         link_name(module, call->name.id_value, LINK_INTERN);
     Operand name = Operand::Function(callee);

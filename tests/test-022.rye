@@ -1,0 +1,7 @@
+/// 13
+
+import "lib/math.rye";
+
+proc main() int {
+  return add(1, 2) + math:TEN;
+}
