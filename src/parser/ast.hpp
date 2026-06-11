@@ -70,13 +70,40 @@ namespace stmt {
     std::vector<Stmt *> else_block;
   };
 
+  struct Assign {
+    Token name;
+    Expr *value;
+  };
+
+  struct While {
+    Expr *cond;
+    std::vector<Stmt *> body;
+  };
+
+  struct For {
+    Stmt *init;
+    Expr *cond;
+    Stmt *step;
+    std::vector<Stmt *> body;
+  };
+
 } // namespace stmt
 
-enum StmtType { STMT_BLOCK, STMT_VAR, STMT_RETURN, STMT_IF };
+enum StmtType {
+  STMT_BLOCK,
+  STMT_VAR,
+  STMT_RETURN,
+  STMT_IF,
+  STMT_ASSIGN,
+  STMT_WHILE,
+  STMT_FOR,
+};
 struct Stmt {
   StmtType type;
   size_t start, end;
-  std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *> data;
+  std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *,
+               stmt::Assign *, stmt::While *, stmt::For *>
+      data;
 };
 
 namespace expr {

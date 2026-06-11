@@ -6,17 +6,22 @@
 struct LiveRange {
   std::string name;
   int start = -1, end = -1;
-  bool spilled;
-  std::string assigned_register = ""; // -1 = spilled
+  bool spilled = false;
+  std::string assigned_register = "";
+};
+
+struct TempAllocation {
+  bool spilled = false;
+  std::string reg;
 };
 
 struct AllocationResult {
   std::map<std::string, LiveRange> range_map;
   std::vector<LiveRange> ranges;
-  std::map<std::string, std::string> allocations;
+  std::map<std::string, TempAllocation> allocations;
 };
 
-std::map<std::string, std::string>
+std::map<std::string, TempAllocation>
 allocate_registers(const std::vector<Instruction> &instructions,
                    const std::vector<std::string> &available_registers);
 

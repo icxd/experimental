@@ -47,13 +47,33 @@ proc main() int {
   }
   return 0;
 }
+
+proc sum_to_n(n int) int {
+  var total int = 0;
+  for var i int = 1; i <= n; i = i + 1 {
+    total = total + i;
+  }
+  return total;
+}
+```
+
+Loop forms:
+
+```rye
+while condition {
+  // body
+}
+
+for init_stmt; condition; step_stmt {
+  // body
+}
 ```
 
 Supported today:
 
 - Types: `void`, `bool`, `int`, pointers (`*int`, `**int`, …)
 - Declarations: `proc`, `const`, `extern proc`, compile-time `when`
-- Statements: `var`, `return`, `if` / `else`, blocks `{ ... }`
+- Statements: `var`, `name = expr` assignment, `return`, `if` / `else`, `while`, `for`, blocks `{ ... }`
 - Expressions: arithmetic, comparisons, pointers (`&`, `*`), calls
 
 ## Runtime and linking

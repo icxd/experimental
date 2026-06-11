@@ -128,6 +128,54 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
                         .type = type,
                         .value = value,
                     }};
+  } else if (peek().type == TOK_ID && peek(1).type == TOK_EQ) {
+    Token id = consume();
+    try$(expect(TOK_EQ, "Expected `=`"));
+    Expr *value = try$(parse_expr());
+    Token semi = try$(expect(TOK_SEMICOLON, "Expected `;` after assignment"));
+    return new Stmt{.type = STMT_ASSIGN,
+                    .start = id.start,
+                    .end = semi.end,
+                    .data = new stmt::Assign{.name = id, .value = value}};
+  } else if (peek().type == TOK_WHILE) {
+    Token while_ = try$(expect(TOK_WHILE, "Expected `while`"));
+    Expr *cond = try$(parse_expr());
+    std::vector<Stmt *> body = try$(parse_block());
+    return new Stmt{.type = STMT_WHILE,
+                    .start = while_.start,
+                    .end = previous().end,
+                    .data = new stmt::While{.cond = cond, .body = body}};
+  } else if (peek().type == TOK_FOR) {
+    Token for_ = try$(expect(TOK_FOR, "Expected `for`"));
+    Stmt *init = try$(parse_stmt());
+    Expr *cond = try$(parse_expr());
+    try$(expect(TOK_SEMICOLON, "Expected `;` after for-condition"));
+    if (peek().type != TOK_ID || peek(1).type != TOK_EQ) {
+      return std::unexpected(
+          Error("For-loop step must be an assignment", peek().start, peek().end));
+    }
+    Token step_id = consume();
+    try$(expect(TOK_EQ, "Expected `=`"));
+    Expr *step_value = try$(parse_expr());
+    if (peek().type == TOK_SEMICOLON)
+      consume();
+    Stmt *step = new Stmt{.type = STMT_ASSIGN,
+                          .start = step_id.start,
+                          .end = previous().end,
+                          .data = new stmt::Assign{
+                              .name = step_id,
+                              .value = step_value,
+                          }};
+    std::vector<Stmt *> body = try$(parse_block());
+    return new Stmt{.type = STMT_FOR,
+                    .start = for_.start,
+                    .end = previous().end,
+                    .data = new stmt::For{
+                        .init = init,
+                        .cond = cond,
+                        .step = step,
+                        .body = body,
+                    }};
   } else if (peek().type == TOK_IF) {
     Token if_ = try$(expect(TOK_IF, "Expected `if`"));
     Expr *cond = try$(parse_expr());

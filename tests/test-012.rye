@@ -1,0 +1,11 @@
+/// 55
+
+proc main() int {
+  var i int = 1;
+  var sum int = 0;
+  while i <= 10 {
+    sum = sum + i;
+    i = i + 1;
+  }
+  return sum;
+}

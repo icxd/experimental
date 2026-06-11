@@ -125,6 +125,29 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
     if (ret->value.has_value())
       print_expr(out, *ret->value, indent.next(true));
   } break;
+  case STMT_ASSIGN: {
+    auto assign = std::get<stmt::Assign *>(stmt->data);
+    out << " \033[34m" << assign->name.id_value << "\033[0m\n";
+    print_expr(out, assign->value, indent.next(true));
+  } break;
+  case STMT_WHILE: {
+    auto while_ = std::get<stmt::While *>(stmt->data);
+    out << "\n";
+    print_expr(out, while_->cond, indent.next(false));
+    for (size_t i = 0; i < while_->body.size(); ++i)
+      print_stmt(out, while_->body[i],
+                 indent.next(i == while_->body.size() - 1));
+  } break;
+  case STMT_FOR: {
+    auto for_ = std::get<stmt::For *>(stmt->data);
+    out << "\n";
+    print_stmt(out, for_->init, indent.next(false));
+    print_expr(out, for_->cond, indent.next(false));
+    print_stmt(out, for_->step, indent.next(false));
+    for (size_t i = 0; i < for_->body.size(); ++i)
+      print_stmt(out, for_->body[i],
+                 indent.next(i == for_->body.size() - 1));
+  } break;
   case STMT_IF: {
     auto if_ = std::get<stmt::If *>(stmt->data);
     out << "\n";
