@@ -31,15 +31,22 @@ for entry in os.listdir(DIRECTORY):
             skipped += 1
             continue
 
-        entry = entry.with_suffix("")
-        result = subprocess.run(entry, capture_output=True, text=True)
+        output_bin = entry.with_suffix("")
+        if not output_bin.exists():
+            print(f"\033[31;1mERROR:\033[0m Output binary missing for `{entry}`.")
+            if result.stderr:
+                print(result.stderr)
+            failing += 1
+            continue
+
+        result = subprocess.run(output_bin, capture_output=True, text=True)
         if result.returncode != test_exit_code:
-            print(f"\033[31;1mERROR:\033[0m Execution stage failed for `{entry}`.")
+            print(f"\033[31;1mERROR:\033[0m Execution stage failed for `{output_bin}`.")
             print(f"       expected exit code: {test_exit_code}, actual: {result.returncode}")
             failing += 1
             continue
 
-        print(f"\033[32;1m PASS:\033[0m Test `{entry}` passed!")
+        print(f"\033[32;1m PASS:\033[0m Test `{output_bin}` passed!")
         passing += 1
 
 print(f"")

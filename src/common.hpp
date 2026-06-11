@@ -19,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <sys/wait.h>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -52,6 +53,15 @@ static std::string exec(std::string cmd) {
          nullptr)
     result += buffer.data();
   return result;
+}
+
+static int exec_status(const std::string &cmd) {
+  int status = std::system(cmd.c_str());
+  if (status == -1)
+    return -1;
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  return -1;
 }
 
 struct ErrorHelp {

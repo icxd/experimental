@@ -299,15 +299,18 @@ int main(int argc, char *argv[]) {
     out_path = out_path.replace_extension("o");
 
     object_files.push_back(out_path.string());
-    std::string output =
-        exec("clang -c -o " + out_path.string() + " " + s_path.string());
+    int status = exec_status("clang -c -o " + out_path.string() + " " +
+                             s_path.string());
+    if (status != 0)
+      return EXIT_FAILURE;
   }
 
   std::string files;
   for (const std::string &path: object_files)
     files += path + " ";
 
-  std::string output = exec("clang -o " + opts.output_file + " " + files);
+  if (exec_status("clang -o " + opts.output_file + " " + files) != 0)
+    return EXIT_FAILURE;
 
   return EXIT_SUCCESS;
 }
