@@ -1,0 +1,12 @@
+/// 42
+/// define: DEBUG=true
+
+when DEBUG {
+  proc main() int {
+    return 42;
+  }
+} else {
+  proc main() int {
+    return 0;
+  }
+}

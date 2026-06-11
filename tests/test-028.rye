@@ -1,0 +1,13 @@
+/// 0
+/// target: macos-aarch64
+/// check-only
+
+when TARGET_OS == OS_MACOS {
+  proc main() int {
+    return 7;
+  }
+} else {
+  proc main() int {
+    return 0;
+  }
+}

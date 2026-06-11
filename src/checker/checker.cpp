@@ -8,16 +8,191 @@
 
 namespace fs = std::filesystem;
 
-ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
+ErrorOr<void> Checker::inject_builtin_consts() {
   _consts.push_back(CheckedConst{"OS_LINUX", new Type{TYPE_INT},
                                  new Expr{EXPR_INT, 0, 0, new expr::Int{0}}});
   _consts.push_back(CheckedConst{"OS_MACOS", new Type{TYPE_INT},
                                  new Expr{EXPR_INT, 0, 0, new expr::Int{1}}});
   _consts.push_back(CheckedConst{"TARGET_OS", new Type{TYPE_INT},
-                                 new Expr{EXPR_INT, 0, 0, new expr::Int{HOST_OS}}});
+                                 new Expr{EXPR_INT, 0, 0,
+                                          new expr::Int{_config.target_os}}});
+  _consts.push_back(CheckedConst{"ARCH_X86_64", new Type{TYPE_INT},
+                                 new Expr{EXPR_INT, 0, 0, new expr::Int{0}}});
+  _consts.push_back(CheckedConst{"ARCH_AARCH64", new Type{TYPE_INT},
+                                 new Expr{EXPR_INT, 0, 0, new expr::Int{1}}});
+  _consts.push_back(CheckedConst{"TARGET_ARCH", new Type{TYPE_INT},
+                                 new Expr{EXPR_INT, 0, 0,
+                                          new expr::Int{_config.target_arch}}});
+  return {};
+}
 
-  for (Decl *decl: decls)
+ErrorOr<void> Checker::inject_define_consts() {
+  for (const auto &[name, value]: _config.defines) {
+    if (find_const(name).has_value()) {
+      return std::unexpected(
+          Error(std::format("Cannot redefine constant `{}`", name), 0, 0)
+              .with_hint("`-D` conflicts with an existing constant"));
+    }
+
+    if (value == "true" || value == "false") {
+      bool bool_value = value == "true";
+      _consts.push_back(CheckedConst{
+          name,
+          new Type{TYPE_BOOL},
+          new Expr{EXPR_BOOL, 0, 0, new expr::Bool{bool_value}},
+      });
+      continue;
+    }
+
+    try {
+      size_t consumed = 0;
+      int64_t int_value = std::stoll(value, &consumed);
+      if (consumed != value.size()) {
+        return std::unexpected(
+            Error(std::format("Invalid compile-time define `{}={}`", name, value),
+                  0, 0)
+                .with_hint("Use `true`, `false`, or an integer literal"));
+      }
+      _consts.push_back(CheckedConst{
+          name,
+          new Type{TYPE_INT},
+          new Expr{EXPR_INT, 0, 0, new expr::Int{int_value}},
+      });
+    } catch (const std::exception &) {
+      return std::unexpected(
+          Error(std::format("Invalid compile-time define `{}={}`", name, value),
+                0, 0)
+              .with_hint("Use `true`, `false`, or an integer literal"));
+    }
+  }
+
+  return {};
+}
+
+ErrorOr<std::vector<Decl *>>
+Checker::resolve_when_branch(const std::vector<Decl *> &block, Scope *scope) {
+  std::vector<Decl *> result{};
+  for (Decl *decl: block) {
+    if (decl->type == DECL_WHEN) {
+      std::vector<Decl *> nested = try$(resolve_when_decl(decl, scope));
+      result.insert(result.end(), nested.begin(), nested.end());
+    } else {
+      result.push_back(decl);
+    }
+  }
+  return result;
+}
+
+ErrorOr<std::vector<Decl *>> Checker::resolve_when_decl(Decl *decl,
+                                                        Scope *scope) {
+  decl::When *when = std::get<decl::When *>(decl->data);
+
+  Expr *cond = try$(evaluate_constant(when->cond, scope));
+  when->cond = cond;
+
+  Type *cond_type = try$(check_expr(cond, scope));
+  if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+    return std::unexpected(
+        Error("Condition has to be a boolean", cond->start, cond->end)
+            .with_hint(
+                std::format("Expected `bool`, found `{}`", cond_type->to_string())));
+  }
+
+  when->cond->expr_type = new Type{TYPE_BOOL, cond_type->start, cond_type->end};
+
+  bool value = std::get<expr::Bool *>(cond->data)->value;
+  const std::vector<Decl *> &block =
+      value ? when->true_block : when->false_block;
+  if (block.empty()) {
+    return std::unexpected(
+        Error("Empty branch in `when` declaration", decl->start, decl->end)
+            .with_hint(
+                "Expected at least one branch to contain executable code"));
+  }
+
+  return resolve_when_branch(block, scope);
+}
+
+ErrorOr<std::vector<Stmt *>>
+Checker::resolve_when_branch_stmts(const std::vector<Stmt *> &block,
+                                   Scope *scope) {
+  std::vector<Stmt *> result{};
+  for (Stmt *stmt: block) {
+    if (stmt->type == STMT_WHEN) {
+      std::vector<Stmt *> nested = try$(resolve_when_stmt(stmt, scope));
+      result.insert(result.end(), nested.begin(), nested.end());
+    } else {
+      result.push_back(stmt);
+    }
+  }
+  return result;
+}
+
+ErrorOr<std::vector<Stmt *>> Checker::resolve_when_stmt(Stmt *stmt,
+                                                        Scope *scope) {
+  stmt::When *when = std::get<stmt::When *>(stmt->data);
+
+  Expr *cond = try$(evaluate_constant(when->cond, scope));
+  when->cond = cond;
+
+  Type *cond_type = try$(check_expr(cond, scope));
+  if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+    return std::unexpected(
+        Error("Condition has to be a boolean", cond->start, cond->end)
+            .with_hint(
+                std::format("Expected `bool`, found `{}`", cond_type->to_string())));
+  }
+
+  when->cond->expr_type = new Type{TYPE_BOOL, cond_type->start, cond_type->end};
+
+  bool value = std::get<expr::Bool *>(cond->data)->value;
+  const std::vector<Stmt *> &block =
+      value ? when->true_block : when->false_block;
+
+  return resolve_when_branch_stmts(block, scope);
+}
+
+ErrorOr<void> Checker::expand_when_stmts(std::vector<Stmt *> &stmts,
+                                          Scope *scope) {
+  for (size_t i = 0; i < stmts.size();) {
+    Stmt *stmt = stmts[i];
+    if (stmt->type == STMT_WHEN) {
+      std::vector<Stmt *> expanded = try$(resolve_when_stmt(stmt, scope));
+      stmts.erase(stmts.begin() + static_cast<std::ptrdiff_t>(i));
+      stmts.insert(stmts.begin() + static_cast<std::ptrdiff_t>(i),
+                   expanded.begin(), expanded.end());
+      continue;
+    }
+
+    if (stmt->type == STMT_BLOCK) {
+      stmt::Block *block = std::get<stmt::Block *>(stmt->data);
+      try$(expand_when_stmts(block->stmts, scope));
+    }
+
+    ++i;
+  }
+
+  return {};
+}
+
+ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
+  try$(inject_builtin_consts());
+  try$(inject_define_consts());
+
+  for (size_t i = 0; i < decls.size();) {
+    Decl *decl = decls[i];
+    if (decl->type == DECL_WHEN) {
+      std::vector<Decl *> expanded = try$(resolve_when_decl(decl, _global_scope));
+      decls.erase(decls.begin() + static_cast<std::ptrdiff_t>(i));
+      decls.insert(decls.begin() + static_cast<std::ptrdiff_t>(i),
+                   expanded.begin(), expanded.end());
+      continue;
+    }
+
     try$(check_decl(decl, _global_scope));
+    ++i;
+  }
+
   return {};
 }
 
@@ -97,6 +272,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     });
     _current_proc_id = _procs.size() - 1;
 
+    try$(expand_when_stmts(proc->body, proc_scope));
     for (auto *stmt: proc->body)
       try$(check_stmt(stmt, proc_scope));
 
@@ -105,44 +281,8 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     return {};
   }
 
-  case DECL_WHEN: {
-    decl::When *when = std::get<decl::When *>(decl->data);
-
-    Expr *cond = try$(evaluate_constant(when->cond, scope));
-    when->cond = cond;
-
-    Type *cond_type = try$(check_expr(cond, scope));
-    if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
-      return std::unexpected(
-          Error("Condition has to be a boolean", cond->start, cond->end)
-              .with_hint(std::format("Expected `bool`, found `{}`",
-                                     cond_type->to_string())));
-    }
-
-    when->cond->expr_type =
-        new Type{TYPE_BOOL, cond_type->start, cond_type->end};
-
-
-    bool value = std::get<expr::Bool *>(cond->data)->value;
-
-    std::vector<Decl *> block = value ? when->true_block : when->false_block;
-    if (block.size() == 0)
-      return std::unexpected(
-          Error("Empty branch in `when` declaration", decl->start, decl->end)
-              .with_hint(
-                  "Expected at least one branch to contain executable code"));
-
-    if (block.size() > 1)
-      return std::unexpected(
-          Error("The branches in `when` declarations currently only support "
-                "one declaration each",
-                decl->start, decl->end));
-
-    try$(check_decl(block.back(), _global_scope));
-    *decl = *block.back();
-
-    return {};
-  }
+  case DECL_WHEN:
+    PANIC("unreachable");
 
   case DECL_IMPORT: {
     decl::Import *import = std::get<decl::Import *>(decl->data);
@@ -190,10 +330,14 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
   switch (stmt->type) {
   case STMT_BLOCK: {
     stmt::Block *block = std::get<stmt::Block *>(stmt->data);
+    try$(expand_when_stmts(block->stmts, scope));
     for (Stmt *inner: block->stmts)
       try$(check_stmt(inner, scope));
     return {};
   }
+
+  case STMT_WHEN:
+    PANIC("unreachable");
 
   case STMT_ASSIGN: {
     stmt::Assign *assign = std::get<stmt::Assign *>(stmt->data);
@@ -679,6 +823,11 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
     }
 
     case expr::Binary::BINOP_EQ: {
+      if (lhs->type == EXPR_BOOL && rhs->type == EXPR_BOOL) {
+        bool l = std::get<expr::Bool *>(lhs->data)->value;
+        bool r = std::get<expr::Bool *>(rhs->data)->value;
+        return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l == r}};
+      }
       if (lhs->type != EXPR_INT)
         PANIC("TODO: support other than ints as LHS in ==");
       if (rhs->type != EXPR_INT)
@@ -691,6 +840,11 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
     }
 
     case expr::Binary::BINOP_NEQ: {
+      if (lhs->type == EXPR_BOOL && rhs->type == EXPR_BOOL) {
+        bool l = std::get<expr::Bool *>(lhs->data)->value;
+        bool r = std::get<expr::Bool *>(rhs->data)->value;
+        return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l != r}};
+      }
       if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
         PANIC("TODO: support non-int constant comparisons");
       int64_t l = std::get<expr::Int *>(lhs->data)->value;
@@ -729,8 +883,40 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
       int64_t r = std::get<expr::Int *>(rhs->data)->value;
       return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l >= r}};
     }
+
+    case expr::Binary::BINOP_AND: {
+      if (lhs->type != EXPR_BOOL || rhs->type != EXPR_BOOL)
+        PANIC("TODO: support non-bool constant logical ops");
+      bool l = std::get<expr::Bool *>(lhs->data)->value;
+      bool r = std::get<expr::Bool *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end,
+                      new expr::Bool{l && r}};
+    }
+
+    case expr::Binary::BINOP_OR: {
+      if (lhs->type != EXPR_BOOL || rhs->type != EXPR_BOOL)
+        PANIC("TODO: support non-bool constant logical ops");
+      bool l = std::get<expr::Bool *>(lhs->data)->value;
+      bool r = std::get<expr::Bool *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end,
+                      new expr::Bool{l || r}};
+    }
     }
     std::unreachable();
+  }
+
+  case EXPR_GROUP: {
+    auto group = std::get<expr::Group *>(expr->data);
+    return evaluate_constant(group->expr, scope);
+  }
+
+  case EXPR_NOT: {
+    auto not_ = std::get<expr::Not *>(expr->data);
+    Expr *inner = try$(evaluate_constant(not_->expr, scope));
+    if (inner->type != EXPR_BOOL)
+      PANIC("TODO: support non-bool constant negation");
+    bool value = std::get<expr::Bool *>(inner->data)->value;
+    return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{!value}};
   }
 
   default:

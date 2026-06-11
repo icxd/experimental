@@ -1,0 +1,17 @@
+/// 77
+
+when TARGET_OS == OS_LINUX {
+  const LINUX_VALUE int = 50;
+  proc helper() int {
+    return LINUX_VALUE;
+  }
+} else {
+  const LINUX_VALUE int = 0;
+  proc helper() int {
+    return 0;
+  }
+}
+
+proc main() int {
+  return helper() + 27;
+}

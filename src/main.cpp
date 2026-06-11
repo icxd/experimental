@@ -7,6 +7,7 @@
 #include <checker/module_registry.hpp>
 #include <codegen/codegen.hpp>
 #include <common.hpp>
+#include <compile_config.hpp>
 #include <host.hpp>
 #include <ir/irgen.hpp>
 #include <lexer/lexer.hpp>
@@ -20,9 +21,11 @@ struct Opts {
   std::vector<std::string> files = {};
   std::vector<std::string> import_paths = {};
   std::string output_file = "a.out";
+  CompileConfig config = {};
   bool print_tokens = false;
   bool print_ast = false;
   bool print_ir = false;
+  bool check_only = false;
 };
 
 struct ParsedModule {
@@ -197,8 +200,20 @@ int main(int argc, char *argv[]) {
       opts.print_ast = true;
     } else if (strncmp(opt, "--print-ir", 10) == 0) {
       opts.print_ir = true;
+    } else if (strncmp(opt, "--check-only", 12) == 0) {
+      opts.check_only = true;
     } else if (strncmp(opt, "-I", 2) == 0) {
       opts.import_paths.push_back(argv[i++]);
+    } else if (strncmp(opt, "-D", 2) == 0) {
+      char *define = argv[i++];
+      auto parsed = parse_define_flag(define, opts.config);
+      if (!parsed.has_value())
+        throw std::runtime_error(parsed.error().message);
+    } else if (strncmp(opt, "--target", 8) == 0) {
+      char *target = argv[i++];
+      auto parsed = parse_target_flag(target, opts.config);
+      if (!parsed.has_value())
+        throw std::runtime_error(parsed.error().message);
     } else {
       throw std::runtime_error("illegal option");
     }
@@ -244,7 +259,7 @@ int main(int argc, char *argv[]) {
     ParsedModule &module = modules.at(path);
 
     Checker checker(module.module_name, module.abs_path, &registry,
-                    module.is_runtime, opts.import_paths);
+                    module.is_runtime, opts.import_paths, opts.config);
     ErrorOr<void> check = checker.check_decls(module.decls);
     if (!check.has_value()) {
       print_error(module.source, module.rel_path, check.error());
@@ -266,6 +281,9 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    if (opts.check_only)
+      continue;
+
     Generator gen(module.decls, module.module_name,
                   should_mangle_module(module.rel_path), &registry,
                   checker.imports());
@@ -277,7 +295,12 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    Target target = get_host_target();
+    auto codegen_target = target_for_codegen(opts.config);
+    if (!codegen_target.has_value()) {
+      print_error("", "", codegen_target.error());
+      return EXIT_FAILURE;
+    }
+    Target target = codegen_target.value();
     std::unique_ptr<Emitter> emitter(Emitter::get_emitter(
         target, gen.builder().constants(), gen.builder().functions()));
     emitter->emit();
@@ -298,7 +321,7 @@ int main(int argc, char *argv[]) {
     out.close();
   }
 
-  if (opts.print_ast || opts.print_ir)
+  if (opts.print_ast || opts.print_ir || opts.check_only)
     return EXIT_SUCCESS;
 
   std::vector<std::string> object_files{};

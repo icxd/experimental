@@ -5,6 +5,7 @@
 #include <checker/checker_types.hpp>
 #include <checker/module_registry.hpp>
 #include <common.hpp>
+#include <compile_config.hpp>
 #include <parser/ast.hpp>
 #include <vector>
 
@@ -12,14 +13,16 @@ class Checker {
 public:
   Checker(std::string_view module_name, std::string_view file_path,
           const ModuleRegistry *registry = nullptr, bool is_runtime = false,
-          const std::vector<std::string> &import_search_paths = {}) :
+          const std::vector<std::string> &import_search_paths = {},
+          const CompileConfig &config = {}) :
       _module_name(module_name),
       _file_path(file_path),
       _registry(registry),
       _is_runtime(is_runtime),
-      _import_search_paths(import_search_paths) {}
+      _import_search_paths(import_search_paths),
+      _config(config) {}
 
-  ErrorOr<void> check_decls(const std::vector<Decl *> &decls);
+  ErrorOr<void> check_decls(std::vector<Decl *> &decls);
 
   const std::vector<CheckedProc> &procs() const { return _procs; }
   const std::vector<CheckedConst> &consts() const { return _consts; }
@@ -32,6 +35,16 @@ private:
   ErrorOr<Type *> check_type(Type *type, Scope *scope);
 
   ErrorOr<Expr *> evaluate_constant(Expr *expr, Scope *scope);
+
+  ErrorOr<void> inject_builtin_consts();
+  ErrorOr<void> inject_define_consts();
+  ErrorOr<std::vector<Decl *>> resolve_when_branch(const std::vector<Decl *> &block,
+                                                   Scope *scope);
+  ErrorOr<std::vector<Decl *>> resolve_when_decl(Decl *decl, Scope *scope);
+  ErrorOr<std::vector<Stmt *>> resolve_when_branch_stmts(
+      const std::vector<Stmt *> &block, Scope *scope);
+  ErrorOr<std::vector<Stmt *>> resolve_when_stmt(Stmt *stmt, Scope *scope);
+  ErrorOr<void> expand_when_stmts(std::vector<Stmt *> &stmts, Scope *scope);
 
   bool type_eq(Type *a, Type *b);
 
@@ -55,6 +68,7 @@ private:
   const ModuleRegistry *_registry = nullptr;
   bool _is_runtime = false;
   std::vector<std::string> _import_search_paths = {};
+  CompileConfig _config = {};
   std::vector<std::string> _imports = {};
   std::vector<CheckedProc> _procs = {};
   size_t _current_proc_id = std::numeric_limits<size_t>::max();

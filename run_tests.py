@@ -5,27 +5,38 @@ import os
 COMPILER = "./build/rye"
 DIRECTORY = "./tests/"
 
-def parse_test(path: Path) -> (bool, int, list[str]):
+def parse_test(path: Path) -> (bool, int, list[str], list[str], str | None, bool):
     with open(path, 'r') as f:
         lines = f.readlines();
     if not lines[0].startswith('/// '):
-        return (False, 0, [])
+        return (False, 0, [], [], None, False)
 
     exit_code = int(lines[0][3:].strip())
     import_paths = []
+    defines = []
+    target = None
+    compile_only = False
     for line in lines[1:]:
         line = line.strip()
         if not line.startswith('/// '):
             break
         if line.startswith('/// import-path:'):
             import_paths.append(line[len('/// import-path:'):].strip())
-    return (True, exit_code, import_paths)
+        elif line.startswith('/// define:'):
+            defines.append(line[len('/// define:'):].strip())
+        elif line.startswith('/// target:'):
+            target = line[len('/// target:'):].strip()
+        elif line == '/// compile-only':
+            compile_only = True
+        elif line == '/// check-only':
+            compile_only = True
+    return (True, exit_code, import_paths, defines, target, compile_only)
 
 passing, skipped, failing = 0,0,0
 for entry in os.listdir(DIRECTORY):
     entry = Path(os.path.join(DIRECTORY, entry))
     if entry.suffix == ".rye":
-        (success, test_exit_code, import_paths) = parse_test(entry)
+        (success, test_exit_code, import_paths, defines, target, compile_only) = parse_test(entry)
         if not success:
             print(f"\033[33;1m SKIP:\033[0m Invalid test `{entry}`, skipping.")
             skipped += 1
@@ -34,12 +45,23 @@ for entry in os.listdir(DIRECTORY):
         cmd = [COMPILER, entry, "-O", entry.with_suffix("")]
         for import_path in import_paths:
             cmd.extend(["-I", import_path])
+        for define in defines:
+            cmd.extend(["-D", define])
+        if target is not None:
+            cmd.extend(["--target", target])
+        if compile_only:
+            cmd.append("--check-only")
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"\033[31;1mERROR:\033[0m Compilation stage failed for `{entry}`.")
             if result.stderr:
                 print(result.stderr)
             failing += 1
+            continue
+
+        if compile_only:
+            print(f"\033[32;1m PASS:\033[0m Test `{entry}` passed (compile-only)!")
+            passing += 1
             continue
 
         output_bin = entry.with_suffix("")

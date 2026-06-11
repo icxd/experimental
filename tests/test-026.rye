@@ -1,0 +1,13 @@
+/// 99
+
+const PICK int = 99;
+
+proc main() int {
+  var result int = 0;
+  when PICK == 99 {
+    result = 99;
+  } else {
+    result = 1;
+  }
+  return result;
+}
