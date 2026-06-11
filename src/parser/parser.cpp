@@ -16,11 +16,41 @@ ErrorOr<std::vector<Decl *>> Parser::parse_decls() {
 }
 
 ErrorOr<Decl *> Parser::parse_decl() {
+  if (peek().type == TOK_COMPTIME && peek(1).type == TOK_OBRACE) {
+    Token comptime = try$(expect(TOK_COMPTIME, "Expected `comptime`"));
+    std::vector<Decl *> block_decls{};
+    Token obrace = try$(expect(TOK_OBRACE, "Expected {"));
+    while (_pos < _tokens.size() && peek().type != TOK_CBRACE)
+      block_decls.push_back(try$(parse_decl()));
+    Token cbrace = try$(expect(TOK_CBRACE, "Expected }"));
+
+    auto *block_data = _arena.create<decl::ComptimeBlock>(
+        decl::ComptimeBlock{.decls = block_decls});
+
+    return _arena.create<Decl>(Decl{.type = DECL_COMPTIME_BLOCK,
+                                    .start = comptime.start,
+                                    .end = cbrace.end,
+                                    .data = block_data});
+  }
+
+  bool is_comptime = false;
+  size_t decl_start = peek().start;
+  if (peek().type == TOK_COMPTIME) {
+    is_comptime = true;
+    decl_start = peek().start;
+    try$(expect(TOK_COMPTIME, "Expected `comptime`"));
+  }
+
   if (peek().type == TOK_PROC ||
       (peek().type == TOK_EXTERN && peek(1).type == TOK_PROC)) {
-    size_t start = peek().start;
+    size_t start = is_comptime ? decl_start : peek().start;
     Linkage linkage = LINK_INTERN;
     if (peek().type == TOK_EXTERN) {
+      if (is_comptime) {
+        return std::unexpected(
+            Error("`comptime` procedures cannot be `extern`", peek().start,
+                  peek().end));
+      }
       linkage = LINK_EXTERN;
       try$(expect(TOK_EXTERN, "Expected `extern`"));
     }
@@ -52,6 +82,7 @@ ErrorOr<Decl *> Parser::parse_decl() {
         .params = params,
         .ret_type = ret_type,
         .linkage = linkage,
+        .is_comptime = is_comptime,
         .body = body,
     });
 
@@ -116,10 +147,14 @@ ErrorOr<Decl *> Parser::parse_decl() {
                                     .start = import.start,
                                     .end = semi.end,
                                     .data = import_data});
+  } else if (is_comptime) {
+    return std::unexpected(
+        Error("Expected `proc` or `{` after `comptime`", peek().start,
+              peek().end));
   } else {
     return std::unexpected(
-        Error("Expected `proc`, `const`, `import`, or `when`", peek().start,
-              peek().end));
+        Error("Expected `proc`, `const`, `import`, `when`, or `comptime`",
+              peek().start, peek().end));
   }
 }
 
@@ -306,16 +341,16 @@ size_t get_operator_precedence(Token tok) {
   case TOK_PLUS:
   case TOK_MINUS: return 15;
 
+  case TOK_PIPEPIPE: return 9;
+
+  case TOK_AMPAMP: return 10;
+
   case TOK_EQEQ:
   case TOK_NEQ:
   case TOK_LT:
   case TOK_LTE:
   case TOK_GT:
-  case TOK_GTE:   return 10;
-
-  case TOK_AMPAMP: return 11;
-
-  case TOK_PIPEPIPE: return 12;
+  case TOK_GTE:   return 11;
 
   default:           return 0;
   }
@@ -339,7 +374,7 @@ expr::Binary::BinOp tok_to_binop(Token tok) {
   }
 }
 
-ErrorOr<Expr *> Parser::parse_expr(size_t max_prec) {
+ErrorOr<Expr *> Parser::parse_expr(size_t min_prec) {
   Expr *lhs = try$(parse_primary_expr());
 
   for (;;) {
@@ -349,7 +384,7 @@ ErrorOr<Expr *> Parser::parse_expr(size_t max_prec) {
       break;
 
     size_t prec = get_operator_precedence(op);
-    if (prec >= max_prec)
+    if (prec < min_prec)
       break;
 
     consume();
@@ -392,6 +427,26 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
         .start = bang.start,
         .end = expr->end,
         .data = _arena.create<expr::Not>(expr::Not{.expr = expr}),
+    });
+  } else if (peek().type == TOK_COMPTIME) {
+    Token comptime = try$(expect(TOK_COMPTIME, "Expected `comptime`"));
+    Token name = try$(expect(TOK_ID, "Expected procedure name after `comptime`"));
+    Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+    std::vector<Expr *> args{};
+    while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
+      args.push_back(try$(parse_expr()));
+      if (peek().type == TOK_COMMA)
+        try$(expect(TOK_COMMA, "Expected `,` after argument"));
+      else
+        break;
+    }
+    Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_COMPTIME_CALL,
+        .start = comptime.start,
+        .end = cparen.end,
+        .data = _arena.create<expr::ComptimeCall>(
+            expr::ComptimeCall{.name = name, .arguments = args}),
     });
   } else if (peek().type == TOK_ID) {
     Token var = consume();

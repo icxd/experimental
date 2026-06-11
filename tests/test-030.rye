@@ -1,0 +1,11 @@
+/// 84
+
+comptime proc twice(x int) int {
+  return x * 2;
+}
+
+const ANSWER int = comptime twice(42);
+
+proc main() int {
+  return ANSWER;
+}

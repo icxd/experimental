@@ -3,6 +3,7 @@
 #include <limits>
 
 #include <checker/checker_types.hpp>
+#include <checker/comptime.hpp>
 #include <checker/module_registry.hpp>
 #include <common.hpp>
 #include <compile_config.hpp>
@@ -34,7 +35,21 @@ private:
   ErrorOr<Type *> check_expr(Expr *expr, Scope *scope);
   ErrorOr<Type *> check_type(Type *type, Scope *scope);
 
-  ErrorOr<Expr *> evaluate_constant(Expr *expr, Scope *scope);
+  ErrorOr<Expr *> evaluate_constant(Expr *expr, Scope *scope,
+                                    ComptimeEnv *env = nullptr);
+
+  ErrorOr<void> fold_expr(Expr *expr, Scope *scope, ComptimeEnv *env = nullptr);
+
+  ErrorOr<void> check_comptime_proc(decl::Proc *proc, Scope *scope);
+  ErrorOr<Expr *> run_comptime_proc(decl::Proc *proc,
+                                    const std::vector<Expr *> &args,
+                                    Scope *scope, size_t start, size_t end);
+  ErrorOr<std::optional<Expr *>>
+  execute_comptime_stmts(const std::vector<Stmt *> &stmts, ComptimeEnv &env,
+                         Scope *scope, Type *ret_type, size_t start,
+                         size_t end);
+
+  std::optional<ComptimeProcInfo> find_comptime_proc(std::string_view name);
 
   ErrorOr<void> inject_builtin_consts();
   ErrorOr<void> inject_define_consts();
@@ -71,6 +86,7 @@ private:
   CompileConfig _config = {};
   std::vector<std::string> _imports = {};
   std::vector<CheckedProc> _procs = {};
+  std::unordered_map<std::string, ComptimeProcInfo> _comptime_procs = {};
   size_t _current_proc_id = std::numeric_limits<size_t>::max();
   std::vector<CheckedConst> _consts = {};
   size_t _loop_depth = 0;

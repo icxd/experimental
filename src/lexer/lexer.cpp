@@ -34,6 +34,8 @@ ErrorOr<Token> Lexer::next_token() {
     TokenType type = TOK_ID;
     if (id == "const")
       type = TOK_CONST;
+    else if (id == "comptime")
+      type = TOK_COMPTIME;
     else if (id == "else")
       type = TOK_ELSE;
     else if (id == "if")

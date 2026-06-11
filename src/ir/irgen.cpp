@@ -30,6 +30,8 @@ void Generator::gen_decl(Decl *decl) {
 
   case DECL_PROC: {
     auto proc = std::get<decl::Proc *>(decl->data);
+    if (proc->is_comptime)
+      break;
 
     std::vector<std::string_view> params{};
     for (const auto &param: proc->params)
@@ -49,7 +51,9 @@ void Generator::gen_decl(Decl *decl) {
 
   case DECL_IMPORT: break;
 
-  case DECL_WHEN: PANIC("unreachable");
+  case DECL_WHEN:
+  case DECL_COMPTIME_BLOCK:
+    PANIC("unreachable");
   }
 }
 
@@ -274,6 +278,9 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     fn->deref(dst, src);
     return dst;
   }
+
+  case EXPR_COMPTIME_CALL:
+    PANIC("unreachable");
 
   case EXPR_CALL: {
     auto call = std::get<expr::Call *>(expr->data);

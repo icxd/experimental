@@ -189,6 +189,15 @@ ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
       continue;
     }
 
+    if (decl->type == DECL_COMPTIME_BLOCK) {
+      decl::ComptimeBlock *block =
+          std::get<decl::ComptimeBlock *>(decl->data);
+      decls.erase(decls.begin() + static_cast<std::ptrdiff_t>(i));
+      decls.insert(decls.begin() + static_cast<std::ptrdiff_t>(i),
+                   block->decls.begin(), block->decls.end());
+      continue;
+    }
+
     try$(check_decl(decl, _global_scope));
     ++i;
   }
@@ -233,7 +242,11 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
 
   case DECL_PROC: {
     decl::Proc *proc = std::get<decl::Proc *>(decl->data);
-    if (find_local_proc(proc->name.id_value).has_value()) {
+    if (proc->is_comptime)
+      return check_comptime_proc(proc, scope);
+
+    if (find_local_proc(proc->name.id_value).has_value() ||
+        find_comptime_proc(proc->name.id_value).has_value()) {
       return std::unexpected(Error(
           std::format("Redeclaration of procedure `{}`", proc->name.id_value),
           decl->start, decl->end));
@@ -282,6 +295,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
   }
 
   case DECL_WHEN:
+  case DECL_COMPTIME_BLOCK:
     PANIC("unreachable");
 
   case DECL_IMPORT: {
@@ -518,12 +532,27 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
 }
 
 ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
+  if (expr->type == EXPR_COMPTIME_CALL) {
+    Expr *folded = try$(evaluate_constant(expr, scope, nullptr));
+    expr->type = folded->type;
+    expr->data = folded->data;
+    if (folded->expr_type != nullptr)
+      expr->expr_type = folded->expr_type;
+    return check_expr(expr, scope);
+  }
+
+  Type *type = nullptr;
+
   switch (expr->type) {
-  case EXPR_INT:  return new Type{TYPE_INT, expr->start, expr->end};
+  case EXPR_INT:
+    type = new Type{TYPE_INT, expr->start, expr->end};
+    break;
 
-  case EXPR_BOOL: return new Type{TYPE_BOOL, expr->start, expr->end};
+  case EXPR_BOOL:
+    type = new Type{TYPE_BOOL, expr->start, expr->end};
+    break;
 
-  case EXPR_VAR:  {
+  case EXPR_VAR: {
     expr::Var *var = std::get<expr::Var *>(expr->data);
 
     if (var->module.has_value()) {
@@ -535,22 +564,30 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
                               var->module->id_value, var->var.id_value),
                   expr->start, expr->end));
       }
-      return const_->type;
+      type = const_->type;
+      break;
     }
 
     for (const auto &local: _consts) {
-      if (local.name == var->var.id_value)
-        return local.type;
+      if (local.name == var->var.id_value) {
+        type = local.type;
+        break;
+      }
     }
+    if (type != nullptr)
+      break;
 
     auto found = scope->find_var(var->var.id_value);
-    if (found.has_value())
-      return found.value();
+    if (found.has_value()) {
+      type = found.value();
+      break;
+    }
 
     if (!_imports.empty()) {
       CheckedConst imported =
           try$(find_imported_const(var->var.id_value, expr->start, expr->end));
-      return imported.type;
+      type = imported.type;
+      break;
     }
 
     return std::unexpected(
@@ -560,9 +597,9 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
 
   case EXPR_GROUP: {
     expr::Group *group = std::get<expr::Group *>(expr->data);
-    Type *inner = try$(check_expr(group->expr, scope));
-    group->expr->expr_type = inner;
-    return inner;
+    type = try$(check_expr(group->expr, scope));
+    group->expr->expr_type = type;
+    break;
   }
 
   case EXPR_BINARY: {
@@ -588,14 +625,18 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
     case expr::Binary::BINOP_PLUS:
     case expr::Binary::BINOP_MINUS:
     case expr::Binary::BINOP_STAR:
-    case expr::Binary::BINOP_SLASH: return lhs_type;
+    case expr::Binary::BINOP_SLASH:
+      type = lhs_type;
+      break;
 
     case expr::Binary::BINOP_EQ:
     case expr::Binary::BINOP_NEQ:
     case expr::Binary::BINOP_LT:
     case expr::Binary::BINOP_LTE:
     case expr::Binary::BINOP_GT:
-    case expr::Binary::BINOP_GTE:   return new Type{TYPE_BOOL};
+    case expr::Binary::BINOP_GTE:
+      type = new Type{TYPE_BOOL, expr->start, expr->end};
+      break;
 
     case expr::Binary::BINOP_AND:
     case expr::Binary::BINOP_OR: {
@@ -608,10 +649,11 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
                     "Expected `bool`, found `{}` and `{}`",
                     lhs_type->to_string(), rhs_type->to_string())));
       }
-      return new Type{TYPE_BOOL};
+      type = new Type{TYPE_BOOL, expr->start, expr->end};
+      break;
     }
     }
-    std::unreachable();
+    break;
   }
 
   case EXPR_NOT: {
@@ -625,19 +667,21 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
               .with_hint(
                   std::format("Expected `bool`, found `{}`", inner->to_string())));
     }
-    return new Type{TYPE_BOOL};
+    type = new Type{TYPE_BOOL, expr->start, expr->end};
+    break;
   }
 
   case EXPR_REF: {
     expr::Ref *ref = std::get<expr::Ref *>(expr->data);
     Type *inner = try$(check_expr(ref->expr, scope));
     ref->expr->expr_type = inner;
-    return new Type{
+    type = new Type{
         .type = TYPE_PTR,
         .start = expr->start,
         .end = expr->end,
         .data = new type::Ptr{inner},
     };
+    break;
   }
 
   case EXPR_DEREF: {
@@ -649,7 +693,8 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
                                    expr->start, expr->end));
     }
 
-    return std::get<type::Ptr *>(inner->data)->inner;
+    type = std::get<type::Ptr *>(inner->data)->inner;
+    break;
   }
 
   case EXPR_CALL: {
@@ -717,12 +762,17 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
       argument->expr_type = arg_type;
     }
 
-    Type *ret_type = try$(check_type(proc->ret_type, scope));
-    expr->expr_type = ret_type;
-    return ret_type;
+    type = try$(check_type(proc->ret_type, scope));
+    break;
   }
+
+  case EXPR_COMPTIME_CALL:
+    std::unreachable();
   }
-  std::unreachable();
+
+  try$(fold_expr(expr, scope, nullptr));
+  expr->expr_type = type;
+  return type;
 }
 
 ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
@@ -744,10 +794,335 @@ ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
   std::unreachable();
 }
 
-ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
+std::optional<ComptimeProcInfo>
+Checker::find_comptime_proc(std::string_view name) {
+  auto it = _comptime_procs.find(std::string(name));
+  if (it == _comptime_procs.end())
+    return std::nullopt;
+  return it->second;
+}
+
+ErrorOr<void> Checker::fold_expr(Expr *expr, Scope *scope, ComptimeEnv *env) {
+  switch (expr->type) {
+  case EXPR_BINARY: {
+    auto binary = std::get<expr::Binary *>(expr->data);
+    try$(fold_expr(binary->lhs, scope, env));
+    try$(fold_expr(binary->rhs, scope, env));
+    break;
+  }
+
+  case EXPR_GROUP: {
+    auto group = std::get<expr::Group *>(expr->data);
+    try$(fold_expr(group->expr, scope, env));
+    break;
+  }
+
+  case EXPR_NOT: {
+    auto not_ = std::get<expr::Not *>(expr->data);
+    try$(fold_expr(not_->expr, scope, env));
+    break;
+  }
+
+  default:
+    break;
+  }
+
+  auto folded = evaluate_constant(expr, scope, env);
+  if (folded.has_value()) {
+    expr->type = folded.value()->type;
+    expr->data = folded.value()->data;
+    if (folded.value()->expr_type != nullptr)
+      expr->expr_type = folded.value()->expr_type;
+  }
+
+  return {};
+}
+
+ErrorOr<Expr *> Checker::run_comptime_proc(decl::Proc *proc,
+                                           const std::vector<Expr *> &args,
+                                           Scope *scope, size_t start,
+                                           size_t end) {
+  auto info = find_comptime_proc(proc->name.id_value);
+  if (!info.has_value()) {
+    return std::unexpected(
+        Error(std::format("Use undeclared comptime procedure `{}`",
+                          proc->name.id_value),
+              start, end));
+  }
+
+  if (args.size() != info->params.size()) {
+    return std::unexpected(
+        Error(std::format("Procedure `{}` expected {} arguments but {} were "
+                          "provided",
+                          proc->name.id_value, info->params.size(),
+                          args.size()),
+              start, end));
+  }
+
+  ComptimeEnv env{};
+  for (size_t i = 0; i < args.size(); ++i) {
+    Expr *arg = args[i];
+    Type *param_type = info->params[i].type;
+    Type *arg_type = try$(check_expr(arg, scope));
+    if (!type_eq(param_type, arg_type)) {
+      return std::unexpected(
+          Error("Comptime argument type mismatch", arg->start, arg->end)
+              .with_hint(std::format("Expected `{}`, found `{}`",
+                                     param_type->to_string(),
+                                     arg_type->to_string())));
+    }
+
+    Expr *value = try$(evaluate_constant(arg, scope, nullptr));
+    env.vars[std::string(info->params[i].name)] = {param_type, value};
+  }
+
+  auto result = try$(execute_comptime_stmts(info->proc->body, env, scope,
+                                           info->ret_type, start, end));
+  if (!result.has_value()) {
+    return std::unexpected(
+        Error("Comptime procedure did not return a value", start, end));
+  }
+  return result.value();
+}
+
+ErrorOr<std::optional<Expr *>>
+Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
+                                ComptimeEnv &env, Scope *scope, Type *ret_type,
+                                size_t start, size_t end) {
+  for (Stmt *stmt: stmts) {
+    switch (stmt->type) {
+    case STMT_VAR: {
+      auto var = std::get<stmt::Var *>(stmt->data);
+      Type *type = try$(check_type(var->type, scope));
+      if (type->type != TYPE_INT && type->type != TYPE_BOOL) {
+        return std::unexpected(
+            Error("Comptime variables must have type `int` or `bool`",
+                  stmt->start, stmt->end));
+      }
+      Expr *value = try$(evaluate_constant(var->value, scope, &env));
+      Type *value_type = try$(check_expr(value, scope));
+      if (!type_eq(type, value_type)) {
+        return std::unexpected(
+            Error("Comptime variable type mismatch", var->value->start,
+                  var->value->end));
+      }
+      env.vars[std::string(var->name.id_value)] = {type, value};
+      break;
+    }
+
+    case STMT_ASSIGN: {
+      auto assign = std::get<stmt::Assign *>(stmt->data);
+      std::string name(assign->name.id_value);
+      auto found = env.vars.find(name);
+      if (found == env.vars.end()) {
+        return std::unexpected(
+            Error(std::format("Cannot assign to undeclared comptime variable "
+                              "`{}`",
+                              name),
+                  assign->name.start, assign->name.end));
+      }
+      Expr *value = try$(evaluate_constant(assign->value, scope, &env));
+      Type *value_type = try$(check_expr(value, scope));
+      if (!type_eq(found->second.type, value_type)) {
+        return std::unexpected(
+            Error("Comptime assignment type mismatch", assign->value->start,
+                  assign->value->end));
+      }
+      found->second.value = value;
+      break;
+    }
+
+    case STMT_RETURN: {
+      auto ret = std::get<stmt::Return *>(stmt->data);
+      if (!ret->value.has_value()) {
+        return std::unexpected(
+            Error("Comptime procedure must return a value", stmt->start,
+                  stmt->end));
+      }
+      Expr *value = try$(evaluate_constant(ret->value.value(), scope, &env));
+      Type *value_type = try$(check_expr(value, scope));
+      if (!type_eq(ret_type, value_type)) {
+        return std::unexpected(
+            Error("Comptime return type mismatch", ret->value.value()->start,
+                  ret->value.value()->end)
+                .with_hint(std::format("Expected `{}`, found `{}`",
+                                       ret_type->to_string(),
+                                       value_type->to_string())));
+      }
+      return std::optional<Expr *>{value};
+    }
+
+    case STMT_IF: {
+      auto if_ = std::get<stmt::If *>(stmt->data);
+      Expr *cond = try$(evaluate_constant(if_->cond, scope, &env));
+      Type *cond_type = try$(check_expr(cond, scope));
+      if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+        return std::unexpected(
+            Error("Condition has to be a boolean", if_->cond->start,
+                  if_->cond->end));
+      }
+      bool take_then = std::get<expr::Bool *>(cond->data)->value;
+      const std::vector<Stmt *> &branch =
+          take_then ? if_->then_block : if_->else_block;
+      std::optional<Expr *> result = try$(execute_comptime_stmts(
+          branch, env, scope, ret_type, start, end));
+      if (result.has_value())
+        return result;
+      break;
+    }
+
+    case STMT_WHILE: {
+      auto while_ = std::get<stmt::While *>(stmt->data);
+      bool exited = false;
+      for (size_t guard = 0; guard < 100000; ++guard) {
+        Expr *cond = try$(evaluate_constant(while_->cond, scope, &env));
+        Type *cond_type = try$(check_expr(cond, scope));
+        if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+          return std::unexpected(
+              Error("Condition has to be a boolean", while_->cond->start,
+                    while_->cond->end));
+        }
+        if (!std::get<expr::Bool *>(cond->data)->value) {
+          exited = true;
+          break;
+        }
+
+        std::optional<Expr *> result = try$(execute_comptime_stmts(
+            while_->body, env, scope, ret_type, start, end));
+        if (result.has_value())
+          return result;
+      }
+      if (!exited) {
+        return std::unexpected(
+            Error("Comptime loop iteration limit exceeded", stmt->start,
+                  stmt->end));
+      }
+      break;
+    }
+
+    case STMT_BLOCK: {
+      auto block = std::get<stmt::Block *>(stmt->data);
+      std::optional<Expr *> result = try$(execute_comptime_stmts(
+          block->stmts, env, scope, ret_type, start, end));
+      if (result.has_value())
+        return result;
+      break;
+    }
+
+    case STMT_FOR:
+    case STMT_WHEN:
+    case STMT_BREAK:
+    case STMT_CONTINUE:
+      return std::unexpected(
+          Error("Statement is not supported in comptime code", stmt->start,
+                stmt->end));
+    }
+  }
+
+  return std::nullopt;
+}
+
+ErrorOr<void> Checker::check_comptime_proc(decl::Proc *proc, Scope *scope) {
+  std::string name(proc->name.id_value);
+  if (find_comptime_proc(name).has_value() || find_local_proc(name).has_value()) {
+    return std::unexpected(
+        Error(std::format("Redeclaration of procedure `{}`", name),
+              proc->name.start, proc->name.end));
+  }
+
+  if (proc->linkage == LINK_EXTERN) {
+    return std::unexpected(
+        Error("`comptime` procedures cannot be `extern`", proc->name.start,
+              proc->name.end));
+  }
+
+  std::set<std::string_view> param_names{};
+  std::vector<CheckedParam> params{};
+  for (const Param &param: proc->params) {
+    std::string_view param_name = param.name.id_value;
+    if (param_names.contains(param_name)) {
+      return std::unexpected(
+          Error(std::format("Parameter with name `{}` already exists",
+                            param_name),
+                param.name.start, param.name.end));
+    }
+    Type *type = try$(check_type(param.type, scope));
+    if (type->type != TYPE_INT && type->type != TYPE_BOOL) {
+      return std::unexpected(
+          Error("Comptime procedure parameters must have type `int` or `bool`",
+                param.type->start, param.type->end));
+    }
+    param_names.insert(param_name);
+    params.push_back({param_name, type});
+  }
+
+  if (!proc->ret_type.has_value()) {
+    return std::unexpected(
+        Error("Comptime procedure must declare a return type", proc->name.start,
+              proc->name.end));
+  }
+
+  Type *ret_type = try$(check_type(proc->ret_type.value(), scope));
+  if (ret_type->type == TYPE_VOID) {
+    return std::unexpected(
+        Error("Comptime procedure must return `int` or `bool`", proc->name.start,
+              proc->name.end));
+  }
+  if (ret_type->type != TYPE_INT && ret_type->type != TYPE_BOOL) {
+    return std::unexpected(
+        Error("Comptime procedure must return `int` or `bool`", proc->name.start,
+              proc->name.end));
+  }
+
+  ComptimeEnv env{};
+  for (const auto &param: params) {
+    Expr *dummy = nullptr;
+    if (param.type->type == TYPE_INT)
+      dummy = new Expr{EXPR_INT, 0, 0, new expr::Int{0}};
+    else
+      dummy = new Expr{EXPR_BOOL, 0, 0, new expr::Bool{false}};
+    env.vars[std::string(param.name)] = {param.type, dummy};
+  }
+
+  std::optional<Expr *> validated = try$(execute_comptime_stmts(
+      proc->body, env, scope, ret_type, proc->name.start, proc->name.end));
+  if (!validated.has_value()) {
+    return std::unexpected(
+        Error("Comptime procedure must return a value on all paths",
+              proc->name.start, proc->name.end));
+  }
+
+  _comptime_procs[name] = ComptimeProcInfo{
+      .proc = proc,
+      .params = params,
+      .ret_type = ret_type,
+  };
+
+  return {};
+}
+
+ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope,
+                                           ComptimeEnv *env) {
   switch (expr->type) {
   case EXPR_INT:
   case EXPR_BOOL: return expr;
+
+  case EXPR_COMPTIME_CALL: {
+    auto call = std::get<expr::ComptimeCall *>(expr->data);
+    auto info = find_comptime_proc(call->name.id_value);
+    if (!info.has_value()) {
+      return std::unexpected(
+          Error(std::format("Use undeclared comptime procedure `{}`",
+                            call->name.id_value),
+                expr->start, expr->end));
+    }
+
+    std::vector<Expr *> args{};
+    for (Expr *arg: call->arguments)
+      args.push_back(try$(evaluate_constant(arg, scope, env)));
+
+    return run_comptime_proc(info->proc, args, scope, expr->start, expr->end);
+  }
 
   case EXPR_VAR:  {
     auto var = std::get<expr::Var *>(expr->data);
@@ -768,6 +1143,12 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
         return local.expr;
     }
 
+    if (env != nullptr) {
+      auto found = env->vars.find(std::string(var->var.id_value));
+      if (found != env->vars.end())
+        return found->second.value;
+    }
+
     if (!_imports.empty()) {
       CheckedConst imported =
           try$(find_imported_const(var->var.id_value, expr->start, expr->end));
@@ -782,8 +1163,8 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
   case EXPR_BINARY: {
     auto binary = std::get<expr::Binary *>(expr->data);
 
-    Expr *lhs = try$(evaluate_constant(binary->lhs, scope));
-    Expr *rhs = try$(evaluate_constant(binary->rhs, scope));
+    Expr *lhs = try$(evaluate_constant(binary->lhs, scope, env));
+    Expr *rhs = try$(evaluate_constant(binary->rhs, scope, env));
 
     switch (binary->op) {
     case expr::Binary::BINOP_PLUS: {
@@ -907,12 +1288,12 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
 
   case EXPR_GROUP: {
     auto group = std::get<expr::Group *>(expr->data);
-    return evaluate_constant(group->expr, scope);
+    return evaluate_constant(group->expr, scope, env);
   }
 
   case EXPR_NOT: {
     auto not_ = std::get<expr::Not *>(expr->data);
-    Expr *inner = try$(evaluate_constant(not_->expr, scope));
+    Expr *inner = try$(evaluate_constant(not_->expr, scope, env));
     if (inner->type != EXPR_BOOL)
       PANIC("TODO: support non-bool constant negation");
     bool value = std::get<expr::Bool *>(inner->data)->value;
