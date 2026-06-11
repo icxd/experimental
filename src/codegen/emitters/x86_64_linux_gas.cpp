@@ -34,14 +34,21 @@ void X86_64LinuxGasEmitter::emit_function(Function function) {
   std::string name(function.name);
   _current_fn = name;
   _stack_loc.clear();
+  _spill_loc.clear();
   _next_stack_loc = 16;
 
   if (function.linkage == LINK_INTERN) {
     auto regmap = allocate_registers(function.instructions, _registers);
     _register_maps.insert({name, regmap});
 
+    size_t spill_count = 0;
+    for (const auto &[_, alloc]: regmap) {
+      if (alloc.spilled)
+        spill_count++;
+    }
+
     size_t local_vars = count_local_variables(function);
-    size_t stack_slots = local_vars + function.parameters.size();
+    size_t stack_slots = local_vars + function.parameters.size() + spill_count;
     size_t stack_size = stack_slots * 16;
     if (stack_size < 16)
       stack_size = 16;
@@ -70,6 +77,13 @@ void X86_64LinuxGasEmitter::emit_function(Function function) {
       _output += "  mov [rsp + " + std::to_string(_next_stack_loc) + "], " +
                  param_reg(i) + "\n";
       _next_stack_loc += 16;
+    }
+
+    for (const auto &[temp, alloc]: regmap) {
+      if (alloc.spilled) {
+        _spill_loc[temp] = _next_stack_loc;
+        _next_stack_loc += 8;
+      }
     }
 
     _end_label = ".L_end_" + name;
@@ -107,7 +121,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand src = instr.srcs[0];
 
     _output += "  mov r10, " + emit_value(src) + "\n";
-    _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_ADDROF: {
@@ -118,10 +132,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
 
     _output += "  lea r10, [rsp + " + emit_operand(src) + "]\n";
 
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", r10\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_DEREF: {
@@ -130,13 +141,10 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     assert(instr.srcs.size() == 1);
     Operand src = instr.srcs[0];
 
-    _output += "  mov r10, [rsp + " + emit_operand(src) + "]\n";
+    _output += "  mov r10, " + emit_value(src) + "\n";
     _output += "  mov r10, [r10]\n";
 
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", r10\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_ADD: {
@@ -147,12 +155,9 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand src2 = instr.srcs[1];
 
     _output += "  mov r10, " + emit_value(src1) + "\n";
-    _output += "  add r10, " + emit_value(src2) + "\n";
-
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", r10\n";
+    _output += "  mov r11, " + emit_value(src2) + "\n";
+    _output += "  add r10, r11\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_SUB: {
@@ -161,11 +166,9 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand src1 = instr.srcs[0];
     Operand src2 = instr.srcs[1];
     _output += "  mov r10, " + emit_value(src1) + "\n";
-    _output += "  sub r10, " + emit_value(src2) + "\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", r10\n";
+    _output += "  mov r11, " + emit_value(src2) + "\n";
+    _output += "  sub r10, r11\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_MUL: {
@@ -174,11 +177,9 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand src1 = instr.srcs[0];
     Operand src2 = instr.srcs[1];
     _output += "  mov r10, " + emit_value(src1) + "\n";
-    _output += "  imul r10, " + emit_value(src2) + "\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", r10\n";
+    _output += "  mov r11, " + emit_value(src2) + "\n";
+    _output += "  imul r10, r11\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_DIV: {
@@ -190,10 +191,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     _output += "  cqo\n";
     _output += "  mov rcx, " + emit_value(src2) + "\n";
     _output += "  idiv rcx\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], rax\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", rax\n";
+    store_scratch(dst, "rax");
   } break;
 
   case OP_CMP_EQ:
@@ -217,13 +215,11 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     default: break;
     }
     _output += "  mov r10, " + emit_value(src1) + "\n";
-    _output += "  cmp r10, " + emit_value(src2) + "\n";
+    _output += "  mov r11, " + emit_value(src2) + "\n";
+    _output += "  cmp r10, r11\n";
     _output += std::format("  {} r10b\n", set);
     _output += "  movzx r10, r10b\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", r10\n";
+    store_scratch(dst, "r10");
   } break;
 
   case OP_LABEL: {
@@ -264,10 +260,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
 
     _output += "  call " + emit_operand(name) + "\n";
 
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  mov [rsp + " + emit_operand(dst) + "], rax\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", rax\n";
+    store_scratch(dst, "rax");
   } break;
 
   case OP_RET: {
@@ -290,12 +283,26 @@ std::string X86_64LinuxGasEmitter::emit_value(Operand operand) {
   case OPERAND_VARIABLE:
     return "[rsp + " + std::to_string(_stack_loc.at(operand.name)) + "]";
   case OPERAND_TEMPORARY: {
-    const auto &reg = current_regmap().at(operand.name);
-    if (reg.empty())
-      PANIC("spilled temporary `{}` is not supported yet", operand.name);
-    return reg;
+    const auto &alloc = current_alloc().at(operand.name);
+    if (alloc.spilled)
+      return "[rsp + " + std::to_string(_spill_loc.at(operand.name)) + "]";
+    return alloc.reg;
   }
   default: PANIC("unexpected operand in value position");
+  }
+}
+
+void X86_64LinuxGasEmitter::store_scratch(const Operand &dst,
+                                          const std::string &scratch) {
+  if (dst.type == OPERAND_VARIABLE) {
+    _output += "  mov [rsp + " + emit_operand(dst) + "], " + scratch + "\n";
+  } else if (dst.type == OPERAND_TEMPORARY) {
+    const auto &alloc = current_alloc().at(dst.name);
+    if (alloc.spilled)
+      _output += "  mov [rsp + " + std::to_string(_spill_loc.at(dst.name)) +
+                 "], " + scratch + "\n";
+    else
+      _output += "  mov " + alloc.reg + ", " + scratch + "\n";
   }
 }
 
@@ -305,10 +312,10 @@ std::string X86_64LinuxGasEmitter::emit_operand(Operand operand) {
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
   case OPERAND_TEMPORARY: {
-    const auto &reg = current_regmap().at(operand.name);
-    if (reg.empty())
-      PANIC("spilled temporary `{}` is not supported yet", operand.name);
-    return reg;
+    const auto &alloc = current_alloc().at(operand.name);
+    if (alloc.spilled)
+      return std::to_string(_spill_loc.at(operand.name));
+    return alloc.reg;
   }
   case OPERAND_FUNCTION: return operand.name;
   case OPERAND_LABEL:    return operand.name;

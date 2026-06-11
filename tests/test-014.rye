@@ -1,0 +1,9 @@
+/// 42
+
+proc main() int {
+  var x int = 0;
+  if true {
+    x = 42;
+  }
+  return x;
+}

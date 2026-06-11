@@ -1,0 +1,14 @@
+/// 90
+
+proc main() int {
+  var t0 int = 1 + 1;
+  var t1 int = 2 + 2;
+  var t2 int = 3 + 3;
+  var t3 int = 4 + 4;
+  var t4 int = 5 + 5;
+  var t5 int = 6 + 6;
+  var t6 int = 7 + 7;
+  var t7 int = 8 + 8;
+  var t8 int = 9 + 9;
+  return t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8;
+}

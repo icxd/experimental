@@ -51,6 +51,40 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
     fn->assign(Operand::Variable(std::string(var->name.id_value)), src);
   } break;
 
+  case STMT_ASSIGN: {
+    auto assign = std::get<stmt::Assign *>(stmt->data);
+    Operand src = gen_expr(assign->value, fn);
+    fn->assign(Operand::Variable(std::string(assign->name.id_value)), src);
+  } break;
+
+  case STMT_WHILE: {
+    auto while_ = std::get<stmt::While *>(stmt->data);
+    std::string loop = _builder.new_label();
+    std::string end = _builder.new_label();
+    fn->label(Operand::Label(loop));
+    Operand cond = gen_expr(while_->cond, fn);
+    fn->jmp_if_zero(cond, Operand::Label(end));
+    for (Stmt *inner: while_->body)
+      gen_stmt(inner, fn);
+    fn->jmp(Operand::Label(loop));
+    fn->label(Operand::Label(end));
+  } break;
+
+  case STMT_FOR: {
+    auto for_ = std::get<stmt::For *>(stmt->data);
+    std::string loop = _builder.new_label();
+    std::string end = _builder.new_label();
+    gen_stmt(for_->init, fn);
+    fn->label(Operand::Label(loop));
+    Operand cond = gen_expr(for_->cond, fn);
+    fn->jmp_if_zero(cond, Operand::Label(end));
+    for (Stmt *inner: for_->body)
+      gen_stmt(inner, fn);
+    gen_stmt(for_->step, fn);
+    fn->jmp(Operand::Label(loop));
+    fn->label(Operand::Label(end));
+  } break;
+
   case STMT_IF: {
     auto if_ = std::get<stmt::If *>(stmt->data);
     Operand cond = gen_expr(if_->cond, fn);

@@ -28,13 +28,22 @@ static size_t count_local_variables(const Function &function) {
 void Aarch64MacosGasEmitter::emit_function(Function function) {
   std::string name(function.name);
   _current_fn = name;
+  _stack_loc.clear();
+  _spill_loc.clear();
+  _next_stack_loc = 16;
 
   if (function.linkage == LINK_INTERN) {
     auto regmap = allocate_registers(function.instructions, _registers);
     _register_maps.insert({name, regmap});
 
+    size_t spill_count = 0;
+    for (const auto &[_, alloc]: regmap) {
+      if (alloc.spilled)
+        spill_count++;
+    }
+
     size_t local_vars = count_local_variables(function);
-    size_t stack_slots = local_vars + function.parameters.size();
+    size_t stack_slots = local_vars + function.parameters.size() + spill_count;
     size_t stack_size = stack_slots * 16;
     if (stack_size < 16)
       stack_size = 16;
@@ -66,6 +75,13 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
       _output += "  str x" + std::to_string(i) + ", [sp, #" +
                  std::to_string(_next_stack_loc) + "]\n";
       _next_stack_loc += 16;
+    }
+
+    for (const auto &[temp, alloc]: regmap) {
+      if (alloc.spilled) {
+        _spill_loc[temp] = _next_stack_loc;
+        _next_stack_loc += 8;
+      }
     }
 
     _end_label = ".L_end_" + name;
@@ -284,16 +300,46 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   }
 }
 
+std::string Aarch64MacosGasEmitter::emit_value(Operand operand) {
+  switch (operand.type) {
+  case OPERAND_CONSTANT_INT: return std::format("#{}", operand.int_value);
+  case OPERAND_CONSTANT:     return emit_value(*get_constant(operand.name));
+  case OPERAND_VARIABLE:
+    return "[sp, " + std::to_string(_stack_loc.at(operand.name)) + "]";
+  case OPERAND_TEMPORARY: {
+    const auto &alloc = current_alloc().at(operand.name);
+    if (alloc.spilled)
+      return "[sp, " + std::to_string(_spill_loc.at(operand.name)) + "]";
+    return alloc.reg;
+  }
+  default: PANIC("unexpected operand in value position");
+  }
+}
+
+void Aarch64MacosGasEmitter::store_scratch(const Operand &dst,
+                                           const std::string &scratch) {
+  if (dst.type == OPERAND_VARIABLE)
+    _output += "  str " + scratch + ", [sp, " + emit_operand(dst) + "]\n";
+  else if (dst.type == OPERAND_TEMPORARY) {
+    const auto &alloc = current_alloc().at(dst.name);
+    if (alloc.spilled)
+      _output += "  str " + scratch + ", [sp, " +
+                 std::to_string(_spill_loc.at(dst.name)) + "]\n";
+    else
+      _output += "  mov " + alloc.reg + ", " + scratch + "\n";
+  }
+}
+
 std::string Aarch64MacosGasEmitter::emit_operand(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
   case OPERAND_TEMPORARY: {
-    const auto &reg = current_regmap().at(operand.name);
-    if (reg.empty())
-      PANIC("spilled temporary `{}` is not supported yet", operand.name);
-    return reg;
+    const auto &alloc = current_alloc().at(operand.name);
+    if (alloc.spilled)
+      return std::to_string(_spill_loc.at(operand.name));
+    return alloc.reg;
   }
   case OPERAND_FUNCTION: return operand.name;
   case OPERAND_LABEL:    return operand.name;

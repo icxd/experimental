@@ -151,6 +151,77 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     return {};
   }
 
+  case STMT_ASSIGN: {
+    stmt::Assign *assign = std::get<stmt::Assign *>(stmt->data);
+    std::string_view name = assign->name.id_value;
+    auto found = scope->find_var(name);
+    if (!found.has_value()) {
+      return std::unexpected(
+          Error(std::format("Cannot assign to undeclared variable `{}`", name),
+                assign->name.start, assign->name.end));
+    }
+    Type *var_type = found.value();
+    Type *expr_type = try$(check_expr(assign->value, scope));
+    if (!type_eq(var_type, expr_type)) {
+      return std::unexpected(
+          Error(std::format(
+                    "Cannot assign value of type `{}` to variable of type `{}`",
+                    expr_type->to_string(), var_type->to_string()),
+                assign->value->start, assign->value->end)
+              .with_hint(std::format("Expected `{}`, found `{}`",
+                                     var_type->to_string(),
+                                     expr_type->to_string())));
+    }
+    assign->value->expr_type = var_type;
+    return {};
+  }
+
+  case STMT_WHILE: {
+    stmt::While *while_ = std::get<stmt::While *>(stmt->data);
+    Type *cond_type = try$(check_expr(while_->cond, scope));
+    if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+      return std::unexpected(
+          Error("Condition has to be a boolean", while_->cond->start,
+                while_->cond->end)
+              .with_hint(std::format("Expected `bool`, found `{}`",
+                                     cond_type->to_string())));
+    }
+    while_->cond->expr_type =
+        new Type{TYPE_BOOL, while_->cond->start, while_->cond->end};
+    for (Stmt *inner: while_->body)
+      try$(check_stmt(inner, scope));
+    return {};
+  }
+
+  case STMT_FOR: {
+    stmt::For *for_ = std::get<stmt::For *>(stmt->data);
+    if (for_->init->type != STMT_VAR && for_->init->type != STMT_ASSIGN) {
+      return std::unexpected(
+          Error("For-loop init must be a variable declaration or assignment",
+                for_->init->start, for_->init->end));
+    }
+    if (for_->step->type != STMT_ASSIGN) {
+      return std::unexpected(
+          Error("For-loop step must be an assignment", for_->step->start,
+                for_->step->end));
+    }
+    try$(check_stmt(for_->init, scope));
+    Type *cond_type = try$(check_expr(for_->cond, scope));
+    if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+      return std::unexpected(
+          Error("Condition has to be a boolean", for_->cond->start,
+                for_->cond->end)
+              .with_hint(std::format("Expected `bool`, found `{}`",
+                                     cond_type->to_string())));
+    }
+    for_->cond->expr_type =
+        new Type{TYPE_BOOL, for_->cond->start, for_->cond->end};
+    for (Stmt *inner: for_->body)
+      try$(check_stmt(inner, scope));
+    try$(check_stmt(for_->step, scope));
+    return {};
+  }
+
   case STMT_IF: {
     stmt::If *if_ = std::get<stmt::If *>(stmt->data);
     Type *cond_type = try$(check_expr(if_->cond, scope));
