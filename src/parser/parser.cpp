@@ -47,17 +47,18 @@ ErrorOr<Decl *> Parser::parse_decl() {
     else
       try$(expect(TOK_SEMICOLON, "Expected ; after return type"));
 
+    auto *proc_data = _arena.create<decl::Proc>(decl::Proc{
+        .name = id,
+        .params = params,
+        .ret_type = ret_type,
+        .linkage = linkage,
+        .body = body,
+    });
 
-    return new Decl{.type = DECL_PROC,
-                    .start = start,
-                    .end = previous().end,
-                    .data = new decl::Proc{
-                        .name = id,
-                        .params = params,
-                        .ret_type = ret_type,
-                        .linkage = linkage,
-                        .body = body,
-                    }};
+    return _arena.create<Decl>(Decl{.type = DECL_PROC,
+                                    .start = start,
+                                    .end = previous().end,
+                                    .data = proc_data});
   } else if (peek().type == TOK_CONST) {
     Token const_ = try$(expect(TOK_CONST, "Expected `const`"));
     Token id = try$(expect(TOK_ID, "Expected an identifier after `const`"));
@@ -66,14 +67,16 @@ ErrorOr<Decl *> Parser::parse_decl() {
     Expr *value = try$(parse_expr());
     Token semi = try$(expect(TOK_SEMICOLON, "Expected ; after value"));
 
-    return new Decl{.type = DECL_CONST,
-                    .start = const_.start,
-                    .end = semi.end,
-                    .data = new decl::Const{
-                        .name = id,
-                        .type = type,
-                        .value = value,
-                    }};
+    auto *const_data = _arena.create<decl::Const>(decl::Const{
+        .name = id,
+        .type = type,
+        .value = value,
+    });
+
+    return _arena.create<Decl>(Decl{.type = DECL_CONST,
+                                    .start = const_.start,
+                                    .end = semi.end,
+                                    .data = const_data});
   } else if (peek().type == TOK_WHEN) {
     Token when = try$(expect(TOK_WHEN, "Expected `when`"));
     Expr *condition = try$(parse_expr());
@@ -94,10 +97,13 @@ ErrorOr<Decl *> Parser::parse_decl() {
       Token cbrace = try$(expect(TOK_CBRACE, "Expected }"));
     }
 
-    return new Decl{.type = DECL_WHEN,
-                    .start = when.start,
-                    .end = previous().end,
-                    .data = new decl::When{condition, when_block, else_block}};
+    auto *when_data = _arena.create<decl::When>(
+        decl::When{condition, when_block, else_block});
+
+    return _arena.create<Decl>(Decl{.type = DECL_WHEN,
+                                    .start = when.start,
+                                    .end = previous().end,
+                                    .data = when_data});
   } else {
     return std::unexpected(
         Error("Expected `proc` or `when`", peek().start, peek().end));
@@ -107,12 +113,12 @@ ErrorOr<Decl *> Parser::parse_decl() {
 ErrorOr<Stmt *> Parser::parse_stmt() {
   if (peek().type == TOK_OBRACE) {
     std::vector<Stmt *> stmts = try$(parse_block());
-    return new Stmt{.type = STMT_BLOCK,
-                    .start = stmts.front()->start,
-                    .end = stmts.back()->end,
-                    .data = new stmt::Block{
-                        .stmts = stmts,
-                    }};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_BLOCK,
+        .start = stmts.front()->start,
+        .end = stmts.back()->end,
+        .data = _arena.create<stmt::Block>(stmt::Block{.stmts = stmts}),
+    });
   } else if (peek().type == TOK_VAR) {
     Token var = try$(expect(TOK_VAR, "Expected `var`"));
     Token id = try$(expect(TOK_ID, "Expected an identifier after `var`"));
@@ -120,31 +126,37 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     Token eq = try$(expect(TOK_EQ, "Expected = after type"));
     Expr *value = try$(parse_expr());
     Token semi = try$(expect(TOK_SEMICOLON, "Expected ; after value"));
-    return new Stmt{.type = STMT_VAR,
-                    .start = var.start,
-                    .end = semi.end,
-                    .data = new stmt::Var{
-                        .name = id,
-                        .type = type,
-                        .value = value,
-                    }};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_VAR,
+        .start = var.start,
+        .end = semi.end,
+        .data = _arena.create<stmt::Var>(stmt::Var{
+            .name = id,
+            .type = type,
+            .value = value,
+        }),
+    });
   } else if (peek().type == TOK_ID && peek(1).type == TOK_EQ) {
     Token id = consume();
     try$(expect(TOK_EQ, "Expected `=`"));
     Expr *value = try$(parse_expr());
     Token semi = try$(expect(TOK_SEMICOLON, "Expected `;` after assignment"));
-    return new Stmt{.type = STMT_ASSIGN,
-                    .start = id.start,
-                    .end = semi.end,
-                    .data = new stmt::Assign{.name = id, .value = value}};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_ASSIGN,
+        .start = id.start,
+        .end = semi.end,
+        .data = _arena.create<stmt::Assign>(stmt::Assign{.name = id, .value = value}),
+    });
   } else if (peek().type == TOK_WHILE) {
     Token while_ = try$(expect(TOK_WHILE, "Expected `while`"));
     Expr *cond = try$(parse_expr());
     std::vector<Stmt *> body = try$(parse_block());
-    return new Stmt{.type = STMT_WHILE,
-                    .start = while_.start,
-                    .end = previous().end,
-                    .data = new stmt::While{.cond = cond, .body = body}};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_WHILE,
+        .start = while_.start,
+        .end = previous().end,
+        .data = _arena.create<stmt::While>(stmt::While{.cond = cond, .body = body}),
+    });
   } else if (peek().type == TOK_FOR) {
     Token for_ = try$(expect(TOK_FOR, "Expected `for`"));
     Stmt *init = try$(parse_stmt());
@@ -159,23 +171,26 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     Expr *step_value = try$(parse_expr());
     if (peek().type == TOK_SEMICOLON)
       consume();
-    Stmt *step = new Stmt{.type = STMT_ASSIGN,
-                          .start = step_id.start,
-                          .end = previous().end,
-                          .data = new stmt::Assign{
-                              .name = step_id,
-                              .value = step_value,
-                          }};
+    auto *step_data = _arena.create<stmt::Assign>(
+        stmt::Assign{.name = step_id, .value = step_value});
+    Stmt *step = _arena.create<Stmt>(Stmt{
+        .type = STMT_ASSIGN,
+        .start = step_id.start,
+        .end = previous().end,
+        .data = step_data,
+    });
     std::vector<Stmt *> body = try$(parse_block());
-    return new Stmt{.type = STMT_FOR,
-                    .start = for_.start,
-                    .end = previous().end,
-                    .data = new stmt::For{
-                        .init = init,
-                        .cond = cond,
-                        .step = step,
-                        .body = body,
-                    }};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_FOR,
+        .start = for_.start,
+        .end = previous().end,
+        .data = _arena.create<stmt::For>(stmt::For{
+            .init = init,
+            .cond = cond,
+            .step = step,
+            .body = body,
+        }),
+    });
   } else if (peek().type == TOK_IF) {
     Token if_ = try$(expect(TOK_IF, "Expected `if`"));
     Expr *cond = try$(parse_expr());
@@ -185,24 +200,46 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
       try$(expect(TOK_ELSE, "Expected `else`"));
       else_block = try$(parse_block());
     }
-    return new Stmt{.type = STMT_IF,
-                    .start = if_.start,
-                    .end = previous().end,
-                    .data = new stmt::If{
-                        .cond = cond,
-                        .then_block = then_block,
-                        .else_block = else_block,
-                    }};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_IF,
+        .start = if_.start,
+        .end = previous().end,
+        .data = _arena.create<stmt::If>(stmt::If{
+            .cond = cond,
+            .then_block = then_block,
+            .else_block = else_block,
+        }),
+    });
   } else if (peek().type == TOK_RETURN) {
     Token return_ = try$(expect(TOK_RETURN, "Expected `return`"));
     std::optional<Expr *> expr = std::nullopt;
     if (peek().type != TOK_SEMICOLON)
       expr = std::make_optional(try$(parse_expr()));
     Token semi = try$(expect(TOK_SEMICOLON, "Expected ;"));
-    return new Stmt{.type = STMT_RETURN,
-                    .start = return_.start,
-                    .end = semi.end,
-                    .data = new stmt::Return{.value = expr}};
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_RETURN,
+        .start = return_.start,
+        .end = semi.end,
+        .data = _arena.create<stmt::Return>(stmt::Return{.value = expr}),
+    });
+  } else if (peek().type == TOK_BREAK) {
+    Token brk = try$(expect(TOK_BREAK, "Expected `break`"));
+    try$(expect(TOK_SEMICOLON, "Expected `;` after `break`"));
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_BREAK,
+        .start = brk.start,
+        .end = previous().end,
+        .data = _arena.create<stmt::Break>(stmt::Break{}),
+    });
+  } else if (peek().type == TOK_CONTINUE) {
+    Token cont = try$(expect(TOK_CONTINUE, "Expected `continue`"));
+    try$(expect(TOK_SEMICOLON, "Expected `;` after `continue`"));
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_CONTINUE,
+        .start = cont.start,
+        .end = previous().end,
+        .data = _arena.create<stmt::Continue>(stmt::Continue{}),
+    });
   } else {
     return std::unexpected(
         Error("Expected a statement", peek().start, peek().end));
@@ -220,43 +257,51 @@ bool is_binary_operator(Token tok) {
   case TOK_LT:
   case TOK_LTE:
   case TOK_GT:
-  case TOK_GTE:   return true;
-  default:        return false;
+  case TOK_GTE:
+  case TOK_AMPAMP:
+  case TOK_PIPEPIPE: return true;
+  default:           return false;
   }
 }
 
 size_t get_operator_precedence(Token tok) {
   switch (tok.type) {
   case TOK_STAR:
-  case TOK_SLASH: return 20; // Multiplication / Division
+  case TOK_SLASH: return 20;
 
   case TOK_PLUS:
-  case TOK_MINUS: return 15; // Addition / Subtraction
+  case TOK_MINUS: return 15;
 
   case TOK_EQEQ:
   case TOK_NEQ:
   case TOK_LT:
   case TOK_LTE:
   case TOK_GT:
-  case TOK_GTE:   return 10; // Comparisons
+  case TOK_GTE:   return 10;
 
-  default:        return 0; // Lowest precedence / unknown case TOK_PLUS:
+  case TOK_AMPAMP: return 6;
+
+  case TOK_PIPEPIPE: return 5;
+
+  default:           return 0;
   }
 }
 
 expr::Binary::BinOp tok_to_binop(Token tok) {
   switch (tok.type) {
-  case TOK_PLUS:  return expr::Binary::BINOP_PLUS;
-  case TOK_MINUS: return expr::Binary::BINOP_MINUS;
-  case TOK_STAR:  return expr::Binary::BINOP_STAR;
-  case TOK_SLASH: return expr::Binary::BINOP_SLASH;
-  case TOK_EQEQ:  return expr::Binary::BINOP_EQ;
-  case TOK_NEQ:   return expr::Binary::BINOP_NEQ;
-  case TOK_LT:    return expr::Binary::BINOP_LT;
-  case TOK_LTE:   return expr::Binary::BINOP_LTE;
-  case TOK_GT:    return expr::Binary::BINOP_GT;
-  case TOK_GTE:   return expr::Binary::BINOP_GTE;
-  default:        PANIC("unreachable");
+  case TOK_PLUS:     return expr::Binary::BINOP_PLUS;
+  case TOK_MINUS:    return expr::Binary::BINOP_MINUS;
+  case TOK_STAR:     return expr::Binary::BINOP_STAR;
+  case TOK_SLASH:    return expr::Binary::BINOP_SLASH;
+  case TOK_EQEQ:     return expr::Binary::BINOP_EQ;
+  case TOK_NEQ:      return expr::Binary::BINOP_NEQ;
+  case TOK_LT:       return expr::Binary::BINOP_LT;
+  case TOK_LTE:      return expr::Binary::BINOP_LTE;
+  case TOK_GT:       return expr::Binary::BINOP_GT;
+  case TOK_GTE:      return expr::Binary::BINOP_GTE;
+  case TOK_AMPAMP:   return expr::Binary::BINOP_AND;
+  case TOK_PIPEPIPE: return expr::Binary::BINOP_OR;
+  default:           PANIC("unreachable");
   }
 }
 
@@ -273,37 +318,63 @@ ErrorOr<Expr *> Parser::parse_expr(size_t max_prec) {
     if (prec >= max_prec)
       break;
 
-    // Left-associative: use prec + 1
-    consume(); // consume operator
+    consume();
 
     Expr *rhs = try$(parse_expr(prec + 1));
 
-    lhs = new Expr{.type = EXPR_BINARY,
-                   .start = lhs->start,
-                   .end = rhs->end,
-                   .data = new expr::Binary{
-                       .lhs = lhs,
-                       .op = tok_to_binop(op),
-                       .rhs = rhs,
-                   }};
+    auto *binary_data = _arena.create<expr::Binary>(expr::Binary{
+        .lhs = lhs,
+        .op = tok_to_binop(op),
+        .rhs = rhs,
+    });
+
+    lhs = _arena.create<Expr>(Expr{
+        .type = EXPR_BINARY,
+        .start = lhs->start,
+        .end = rhs->end,
+        .data = binary_data,
+    });
   }
 
   return lhs;
 }
 
 ErrorOr<Expr *> Parser::parse_primary_expr() {
-  if (peek().type == TOK_ID) {
+  if (peek().type == TOK_OPAREN) {
+    Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+    Expr *expr = try$(parse_expr());
+    Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_GROUP,
+        .start = oparen.start,
+        .end = cparen.end,
+        .data = _arena.create<expr::Group>(expr::Group{.expr = expr}),
+    });
+  } else if (peek().type == TOK_BANG) {
+    Token bang = consume();
+    Expr *expr = try$(parse_primary_expr());
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_NOT,
+        .start = bang.start,
+        .end = expr->end,
+        .data = _arena.create<expr::Not>(expr::Not{.expr = expr}),
+    });
+  } else if (peek().type == TOK_ID) {
     Token var = consume();
     if (var.id_value == "true")
-      return new Expr{.type = EXPR_BOOL,
-                      .start = var.start,
-                      .end = var.end,
-                      .data = new expr::Bool{.value = true}};
+      return _arena.create<Expr>(Expr{
+          .type = EXPR_BOOL,
+          .start = var.start,
+          .end = var.end,
+          .data = _arena.create<expr::Bool>(expr::Bool{.value = true}),
+      });
     else if (var.id_value == "false")
-      return new Expr{.type = EXPR_BOOL,
-                      .start = var.start,
-                      .end = var.end,
-                      .data = new expr::Bool{.value = false}};
+      return _arena.create<Expr>(Expr{
+          .type = EXPR_BOOL,
+          .start = var.start,
+          .end = var.end,
+          .data = _arena.create<expr::Bool>(expr::Bool{.value = false}),
+      });
     else {
       if (peek().type == TOK_OPAREN) {
         Token oparen = try$(expect(TOK_OPAREN, "Expected ( after identifier"));
@@ -317,37 +388,47 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
         }
         Token cparen = try$(expect(TOK_CPAREN, "Expected ) after arguments"));
 
-        return new Expr{.type = EXPR_CALL,
-                        .start = var.start,
-                        .end = cparen.end,
-                        .data = new expr::Call{var, args}};
+        return _arena.create<Expr>(Expr{
+            .type = EXPR_CALL,
+            .start = var.start,
+            .end = cparen.end,
+            .data = _arena.create<expr::Call>(expr::Call{var, args}),
+        });
       }
 
-      return new Expr{.type = EXPR_VAR,
-                      .start = var.start,
-                      .end = var.end,
-                      .data = new expr::Var{.var = var}};
+      return _arena.create<Expr>(Expr{
+          .type = EXPR_VAR,
+          .start = var.start,
+          .end = var.end,
+          .data = _arena.create<expr::Var>(expr::Var{.var = var}),
+      });
     }
   } else if (peek().type == TOK_INT) {
     Token int_ = consume();
-    return new Expr{.type = EXPR_INT,
-                    .start = int_.start,
-                    .end = int_.end,
-                    .data = new expr::Int{.value = int_.int_value}};
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_INT,
+        .start = int_.start,
+        .end = int_.end,
+        .data = _arena.create<expr::Int>(expr::Int{.value = int_.int_value}),
+    });
   } else if (peek().type == TOK_AMPERSAND) {
     Token ampersand = consume();
     Expr *expr = try$(parse_expr());
-    return new Expr{.type = EXPR_REF,
-                    .start = ampersand.start,
-                    .end = expr->end,
-                    .data = new expr::Ref{.expr = expr}};
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_REF,
+        .start = ampersand.start,
+        .end = expr->end,
+        .data = _arena.create<expr::Ref>(expr::Ref{.expr = expr}),
+    });
   } else if (peek().type == TOK_STAR) {
     Token star = consume();
     Expr *expr = try$(parse_expr());
-    return new Expr{.type = EXPR_DEREF,
-                    .start = star.start,
-                    .end = expr->end,
-                    .data = new expr::Deref{.expr = expr}};
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_DEREF,
+        .start = star.start,
+        .end = expr->end,
+        .data = _arena.create<expr::Deref>(expr::Deref{.expr = expr}),
+    });
   } else {
     return std::unexpected(
         Error("Expected a expression", peek().start, peek().end));
@@ -358,25 +439,25 @@ ErrorOr<Type *> Parser::parse_type() {
   if (peek().type == TOK_ID) {
     if (peek().id_value == "bool") {
       Token bool_ = consume();
-      return new Type{
+      return _arena.create<Type>(Type{
           .type = TYPE_BOOL,
           .start = bool_.start,
           .end = bool_.end,
-      };
+      });
     } else if (peek().id_value == "int") {
       Token int_ = consume();
-      return new Type{
+      return _arena.create<Type>(Type{
           .type = TYPE_INT,
           .start = int_.start,
           .end = int_.end,
-      };
+      });
     } else if (peek().id_value == "void") {
       Token void_ = consume();
-      return new Type{
+      return _arena.create<Type>(Type{
           .type = TYPE_VOID,
           .start = void_.start,
           .end = void_.end,
-      };
+      });
     } else {
       return std::unexpected(Error("User defined types are not supported yet",
                                    peek().start, peek().end));
@@ -384,12 +465,12 @@ ErrorOr<Type *> Parser::parse_type() {
   } else if (peek().type == TOK_STAR) {
     Token star = consume();
     Type *inner = try$(parse_type());
-    return new Type{
+    return _arena.create<Type>(Type{
         .type = TYPE_PTR,
         .start = star.start,
         .end = inner->end,
-        .data = new type::Ptr{inner},
-    };
+        .data = _arena.create<type::Ptr>(type::Ptr{inner}),
+    });
   } else {
     return std::unexpected(Error("Expected a type", peek().start, peek().end));
   }
@@ -401,10 +482,12 @@ ErrorOr<Stmt *> Parser::parse_block_stmt() {
   while (_pos < _tokens.size() && peek().type != TOK_CBRACE)
     block.push_back(try$(parse_stmt()));
   Token cbrace = try$(expect(TOK_CBRACE, "Expected }"));
-  return new Stmt{.type = STMT_BLOCK,
-                  .start = obrace.start,
-                  .end = cbrace.end,
-                  .data = new stmt::Block{block}};
+  return _arena.create<Stmt>(Stmt{
+      .type = STMT_BLOCK,
+      .start = obrace.start,
+      .end = cbrace.end,
+      .data = _arena.create<stmt::Block>(stmt::Block{block}),
+  });
 }
 
 ErrorOr<std::vector<Stmt *>> Parser::parse_block() {

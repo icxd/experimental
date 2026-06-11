@@ -243,6 +243,19 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     _output += "  je " + emit_operand(instr.srcs[1]) + "\n";
   } break;
 
+  case OP_JMP_IF_NONZERO: {
+    Operand cond = instr.srcs[0];
+    if (cond.type == OPERAND_VARIABLE)
+      _output += "  cmp qword ptr " + emit_value(cond) + ", 0\n";
+    else if (cond.type == OPERAND_TEMPORARY)
+      _output += "  test " + emit_value(cond) + ", " + emit_value(cond) + "\n";
+    else {
+      _output += "  mov r10, " + emit_value(cond) + "\n";
+      _output += "  test r10, r10\n";
+    }
+    _output += "  jne " + emit_operand(instr.srcs[1]) + "\n";
+  } break;
+
   case OP_CALL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;

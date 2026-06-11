@@ -73,8 +73,16 @@ Supported today:
 
 - Types: `void`, `bool`, `int`, pointers (`*int`, `**int`, …)
 - Declarations: `proc`, `const`, `extern proc`, compile-time `when`
-- Statements: `var`, `name = expr` assignment, `return`, `if` / `else`, `while`, `for`, blocks `{ ... }`
-- Expressions: arithmetic, comparisons, pointers (`&`, `*`), calls
+- Statements: `var`, `name = expr` assignment, `return`, `if` / `else`, `while`, `for`, `break`, `continue`, blocks `{ ... }`
+- Expressions: arithmetic, comparisons, logical operators (`&&`, `||`, `!`), pointers (`&`, `*`), calls
+
+`break` exits the nearest enclosing `while` or `for` loop. `continue` skips to the next iteration — the loop condition for `while`, or the step expression for `for`.
+
+Logical `&&` and `||` short-circuit: the right-hand side is evaluated only when needed. `!` negates a `bool` value.
+
+### Arena allocation
+
+The parser allocates AST nodes from a per-file bump arena (`src/arena.hpp`) instead of scattering `new` across the parse tree. Each source file gets its own arena in `main.cpp`, which keeps allocation fast and localized.
 
 ## Runtime and linking
 
