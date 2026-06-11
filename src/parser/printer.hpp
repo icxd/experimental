@@ -99,6 +99,20 @@ inline void print_expr(std::ostream &out, Expr *expr, Indent indent = {}) {
                  indent.next(i == call->arguments.size() - 1));
     break;
   }
+
+  case EXPR_COMPTIME_CALL: {
+    auto call = std::get<expr::ComptimeCall *>(expr->data);
+    out << "comptime \033[32m" << call->name.id_value << "\033[0m\n";
+    for (size_t i = 0; i < call->arguments.size(); ++i)
+      print_expr(out, call->arguments[i],
+                 indent.next(i == call->arguments.size() - 1));
+    break;
+  }
+
+  case EXPR_NOT:
+    out << "\n";
+    print_expr(out, std::get<expr::Not *>(expr->data)->expr, indent.next(true));
+    break;
   }
 }
 
@@ -202,6 +216,8 @@ static inline void print_decl(std::ostream &out, Decl *decl,
 
   case DECL_PROC: {
     auto proc = std::get<decl::Proc *>(decl->data);
+    if (proc->is_comptime)
+      out << " \033[31mcomptime";
     if (proc->linkage == LINK_EXTERN)
       out << " \033[31mextern";
     out << " \033[32m" << proc->name.id_value << " \033[31m(";
@@ -247,6 +263,15 @@ static inline void print_decl(std::ostream &out, Decl *decl,
   case DECL_IMPORT: {
     auto import = std::get<decl::Import *>(decl->data);
     out << " \033[33m\"" << import->path.string_value << "\"\033[0m\n";
+    break;
+  }
+
+  case DECL_COMPTIME_BLOCK: {
+    auto block = std::get<decl::ComptimeBlock *>(decl->data);
+    out << " \033[31mcomptime\033[0m\n";
+    for (size_t i = 0; i < block->decls.size(); ++i)
+      print_decl(out, block->decls[i],
+                 indent.next(i == block->decls.size() - 1));
     break;
   }
   }

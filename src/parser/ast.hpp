@@ -32,7 +32,12 @@ namespace decl {
     std::vector<Param> params;
     std::optional<Type *> ret_type;
     Linkage linkage;
+    bool is_comptime = false;
     Block body;
+  };
+
+  struct ComptimeBlock {
+    std::vector<Decl *> decls;
   };
 
   struct When {
@@ -47,11 +52,19 @@ namespace decl {
 
 } // namespace decl
 
-enum DeclType { DECL_CONST, DECL_PROC, DECL_WHEN, DECL_IMPORT };
+enum DeclType {
+  DECL_CONST,
+  DECL_PROC,
+  DECL_WHEN,
+  DECL_IMPORT,
+  DECL_COMPTIME_BLOCK,
+};
 struct Decl {
   DeclType type;
   size_t start, end;
-  std::variant<decl::Const *, decl::Proc *, decl::When *, decl::Import *> data;
+  std::variant<decl::Const *, decl::Proc *, decl::When *, decl::Import *,
+               decl::ComptimeBlock *>
+      data;
 };
 
 namespace stmt {
@@ -183,6 +196,11 @@ namespace expr {
     std::vector<Expr *> arguments;
   };
 
+  struct ComptimeCall {
+    Token name;
+    std::vector<Expr *> arguments;
+  };
+
 } // namespace expr
 
 static std::string binop_to_string(expr::Binary::BinOp op) {
@@ -212,6 +230,7 @@ enum ExprType {
   EXPR_REF,
   EXPR_DEREF,
   EXPR_CALL,
+  EXPR_COMPTIME_CALL,
   EXPR_NOT,
 };
 struct Expr {
@@ -219,7 +238,7 @@ struct Expr {
   size_t start, end;
   std::variant<expr::Int *, expr::Bool *, expr::Var *, expr::Group *,
                expr::Binary *, expr::Ref *, expr::Deref *, expr::Call *,
-               expr::Not *>
+               expr::ComptimeCall *, expr::Not *>
       data;
   Type *expr_type = nullptr;
 
@@ -281,6 +300,19 @@ public:
       return out;
     }
 
+    case EXPR_COMPTIME_CALL: {
+      auto x = std::get<expr::ComptimeCall *>(data);
+      std::string out = std::format("comptime {}", x->name.id_value);
+      out += "(";
+      for (size_t i = 0; i < x->arguments.size(); i++) {
+        out += x->arguments[i]->to_string();
+        if (i + 1 < x->arguments.size())
+          out += ", ";
+      }
+      out += ")";
+      return out;
+    }
+
     case EXPR_NOT: {
       auto x = std::get<expr::Not *>(data);
       return std::format("!{}", x->expr->to_string());
@@ -300,6 +332,7 @@ public:
     case EXPR_BINARY:
     case EXPR_REF:
     case EXPR_CALL:
+    case EXPR_COMPTIME_CALL:
     case EXPR_NOT:    return false;
     }
     std::unreachable();

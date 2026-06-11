@@ -1,0 +1,14 @@
+/// 30
+
+comptime proc add(a int, b int) int {
+  return a + b;
+}
+
+comptime {
+  const LEFT int = comptime add(10, 5);
+  const RIGHT int = 15;
+}
+
+proc main() int {
+  return LEFT + RIGHT;
+}

@@ -15,7 +15,7 @@ public:
 private:
   ErrorOr<Decl *> parse_decl();
   ErrorOr<Stmt *> parse_stmt();
-  ErrorOr<Expr *> parse_expr(size_t max_prec = 100000);
+  ErrorOr<Expr *> parse_expr(size_t min_prec = 0);
   ErrorOr<Expr *> parse_primary_expr();
   ErrorOr<Type *> parse_type();
 

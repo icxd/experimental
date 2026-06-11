@@ -206,6 +206,31 @@ Supported targets: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch
 
 Use `--check-only` to type-check and resolve `when` branches without emitting or linking (useful when the selected `-target` does not match the host linker).
 
+### Constant folding and `comptime`
+
+Constant expressions are folded during type checking (`1 + 2 * 3` becomes `7` in the AST). The IR pass also folds arithmetic on literal operands.
+
+Compile-time procedures run during checking and can be called from constant contexts:
+
+```rye
+comptime proc twice(x int) int {
+  return x * 2;
+}
+
+const TABLE_SIZE int = comptime twice(2048);
+
+comptime {
+  const A int = 10;
+  const B int = comptime twice(A);
+}
+
+proc main() int {
+  return TABLE_SIZE + B;
+}
+```
+
+`comptime proc` supports `int`/`bool` parameters and locals, `if`, `while`, assignment, and `return`. Comptime procedures are not emitted into the object file. Use `comptime name(args)` in `const` initializers and other constant contexts.
+
 ### Freestanding / nostdlib
 
 Not supported yet. All programs currently link against libc via `clang` without `-nostdlib`.
