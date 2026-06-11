@@ -98,7 +98,8 @@ void linear_scan_allocate(std::vector<LiveRange> &ranges,
       range.assigned_register = reg;
       active.push_back(&range);
     } else {
-      range.assigned_register = -1; // spilled
+      range.spilled = true;
+      range.assigned_register = "";
     }
   }
 }

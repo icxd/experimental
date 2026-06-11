@@ -1,3 +1,5 @@
+#include <utility>
+
 #include <codegen/emitters/aarch64_linux_gas.hpp>
 #include <codegen/regalloc.hpp>
 #include <ir/ir.hpp>
@@ -6,6 +8,7 @@ void Aarch64LinuxGasEmitter::emit() {
   _output += ".text\n";
   for (const auto *function: _functions)
     emit_function(*function);
+  _output += ".section .note.GNU-stack,\"\",@progbits\n";
 }
 
 static size_t count_local_variables(const Function &function) {
@@ -63,8 +66,11 @@ void Aarch64LinuxGasEmitter::emit_function(Function function) {
       _next_stack_loc += 16;
     }
 
+    _end_label = ".L_end_" + name;
     for (const auto &instr: function.instructions)
       emit_instruction(instr);
+
+    _output += _end_label + ":\n";
 
     if (has_call_instruction)
       _output += "  ldp x29, x30, [sp], " + std::to_string(stack_size) + "\n";
@@ -144,9 +150,94 @@ void Aarch64LinuxGasEmitter::emit_instruction(Instruction instr) {
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
 
-  case OP_SUB:
-  case OP_MUL:
-  case OP_DIV: break;
+  case OP_SUB: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    _output += "  mov x10, " + emit_operand(src1) + "\n";
+    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    _output += "  sub x9, x10, x11\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", x9\n";
+  } break;
+
+  case OP_MUL: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    _output += "  mov x10, " + emit_operand(src1) + "\n";
+    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    _output += "  mul x9, x10, x11\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", x9\n";
+  } break;
+
+  case OP_DIV: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    _output += "  mov x10, " + emit_operand(src1) + "\n";
+    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    _output += "  sdiv x9, x10, x11\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", x9\n";
+  } break;
+
+  case OP_CMP_EQ:
+  case OP_CMP_NEQ:
+  case OP_CMP_LT:
+  case OP_CMP_LTE:
+  case OP_CMP_GT:
+  case OP_CMP_GTE: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    const char *cond = nullptr;
+    switch (instr.opcode) {
+    case OP_CMP_EQ:  cond = "eq"; break;
+    case OP_CMP_NEQ: cond = "ne"; break;
+    case OP_CMP_LT:  cond = "lt"; break;
+    case OP_CMP_LTE: cond = "le"; break;
+    case OP_CMP_GT:  cond = "gt"; break;
+    case OP_CMP_GTE: cond = "ge"; break;
+    default: break;
+    }
+    _output += "  mov x10, " + emit_operand(src1) + "\n";
+    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    _output += "  cmp x10, x11\n";
+    _output += std::format("  cset x9, {}\n", cond);
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", x9\n";
+  } break;
+
+  case OP_LABEL: {
+    _output += emit_operand(instr.srcs[0]) + ":\n";
+  } break;
+
+  case OP_JMP: {
+    _output += "  b " + emit_operand(instr.srcs[0]) + "\n";
+  } break;
+
+  case OP_JMP_IF_ZERO: {
+    Operand cond = instr.srcs[0];
+    if (cond.type == OPERAND_VARIABLE)
+      _output += "  ldr x9, [sp, #" + emit_operand(cond) + "]\n";
+    else
+      _output += "  mov x9, " + emit_operand(cond) + "\n";
+    _output += "  cbz x9, " + emit_operand(instr.srcs[1]) + "\n";
+  } break;
 
   case OP_CALL: {
     assert(instr.dst.has_value());
@@ -172,13 +263,14 @@ void Aarch64LinuxGasEmitter::emit_instruction(Instruction instr) {
   } break;
 
   case OP_RET: {
-    assert(instr.srcs.size() == 1);
-    Operand src = instr.srcs[0];
-
-    if (src.type == OPERAND_VARIABLE)
-      _output += "  ldr x0, [sp, #" + emit_operand(src) + "]\n";
-    else
-      _output += "  mov x0, " + emit_operand(src) + "\n";
+    if (!instr.srcs.empty()) {
+      Operand src = instr.srcs[0];
+      if (src.type == OPERAND_VARIABLE)
+        _output += "  ldr x0, [sp, #" + emit_operand(src) + "]\n";
+      else
+        _output += "  mov x0, " + emit_operand(src) + "\n";
+    }
+    _output += "  b " + _end_label + "\n";
   } break;
   }
 }
@@ -188,7 +280,14 @@ std::string Aarch64LinuxGasEmitter::emit_operand(Operand operand) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
-  case OPERAND_TEMPORARY:    return current_regmap().at(operand.name);
-  case OPERAND_FUNCTION:     return operand.name;
+  case OPERAND_TEMPORARY: {
+    const auto &reg = current_regmap().at(operand.name);
+    if (reg.empty())
+      PANIC("spilled temporary `{}` is not supported yet", operand.name);
+    return reg;
   }
+  case OPERAND_FUNCTION: return operand.name;
+  case OPERAND_LABEL:    return operand.name;
+  }
+  std::unreachable();
 }

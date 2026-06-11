@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include <common.hpp>
 #include <parser/ast.hpp>
 
@@ -31,6 +33,7 @@ enum OperandType {
   OPERAND_VARIABLE,
   OPERAND_TEMPORARY,
   OPERAND_FUNCTION,
+  OPERAND_LABEL,
 };
 struct Operand {
   OperandType type;
@@ -55,6 +58,9 @@ struct Operand {
   static Operand Function(const std::string &n) {
     return Operand{OPERAND_FUNCTION, n};
   }
+  static Operand Label(const std::string &n) {
+    return Operand{OPERAND_LABEL, n};
+  }
 
   std::string debug() const {
     switch (type) {
@@ -63,7 +69,9 @@ struct Operand {
     case OPERAND_TEMPORARY:    return std::format("Temporary({})", name);
     case OPERAND_FUNCTION:     return std::format("Function({})", name);
     case OPERAND_CONSTANT_INT: return std::format("ConstantInt({})", int_value);
+    case OPERAND_LABEL:        return std::format("Label({})", name);
     }
+    std::unreachable();
   }
 
   std::string to_string() const {
@@ -74,7 +82,9 @@ struct Operand {
     case OPERAND_FUNCTION:  return ANSI_GREEN + name + ANSI_RESET;
     case OPERAND_CONSTANT_INT:
       return std::format(ANSI_YELLOW "{}" ANSI_RESET, int_value);
+    case OPERAND_LABEL:     return ANSI_WHITE + name + ANSI_RESET;
     }
+    std::unreachable();
   }
 };
 
@@ -87,6 +97,15 @@ enum Opcode {
   OP_SUB, // a = b - c
   OP_MUL, // a = b * c
   OP_DIV, // a = b / c
+  OP_CMP_EQ,
+  OP_CMP_NEQ,
+  OP_CMP_LT,
+  OP_CMP_LTE,
+  OP_CMP_GT,
+  OP_CMP_GTE,
+  OP_LABEL,
+  OP_JMP,
+  OP_JMP_IF_ZERO,
   OP_CALL, // a = b(...)
   OP_RET, // ret a
 };
@@ -123,6 +142,20 @@ struct Instruction {
       return dst->to_string() + ANSI_RED " = " ANSI_RESET +
              srcs[0].to_string() + ANSI_RED " / " ANSI_RESET +
              srcs[1].to_string();
+    case OP_CMP_EQ:
+    case OP_CMP_NEQ:
+    case OP_CMP_LT:
+    case OP_CMP_LTE:
+    case OP_CMP_GT:
+    case OP_CMP_GTE:
+      return dst->to_string() + ANSI_RED " = cmp " ANSI_RESET +
+             srcs[0].to_string() + ANSI_RED " ? " ANSI_RESET +
+             srcs[1].to_string();
+    case OP_LABEL:      return srcs[0].to_string() + ":";
+    case OP_JMP:        return ANSI_RED "jmp " ANSI_RESET + srcs[0].to_string();
+    case OP_JMP_IF_ZERO:
+      return ANSI_RED "jz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
+             ANSI_RESET + srcs[1].to_string();
     case OP_CALL: {
       std::string out = dst->to_string() + ANSI_RED " = " ANSI_RESET +
                         srcs[0].to_string() + ANSI_RED "(";
@@ -136,6 +169,7 @@ struct Instruction {
     }
     case OP_RET: return ANSI_RED "ret " ANSI_RESET + srcs[0].to_string();
     }
+    std::unreachable();
   }
 };
 
@@ -189,6 +223,29 @@ public:
   void div(Operand dst, Operand src1, Operand src2) {
     append(Instruction(OP_DIV, dst, {src1, src2}));
   }
+  void cmp_eq(Operand dst, Operand src1, Operand src2) {
+    append(Instruction(OP_CMP_EQ, dst, {src1, src2}));
+  }
+  void cmp_neq(Operand dst, Operand src1, Operand src2) {
+    append(Instruction(OP_CMP_NEQ, dst, {src1, src2}));
+  }
+  void cmp_lt(Operand dst, Operand src1, Operand src2) {
+    append(Instruction(OP_CMP_LT, dst, {src1, src2}));
+  }
+  void cmp_lte(Operand dst, Operand src1, Operand src2) {
+    append(Instruction(OP_CMP_LTE, dst, {src1, src2}));
+  }
+  void cmp_gt(Operand dst, Operand src1, Operand src2) {
+    append(Instruction(OP_CMP_GT, dst, {src1, src2}));
+  }
+  void cmp_gte(Operand dst, Operand src1, Operand src2) {
+    append(Instruction(OP_CMP_GTE, dst, {src1, src2}));
+  }
+  void label(Operand lbl) { append(Instruction(OP_LABEL, std::nullopt, {lbl})); }
+  void jmp(Operand lbl) { append(Instruction(OP_JMP, std::nullopt, {lbl})); }
+  void jmp_if_zero(Operand cond, Operand lbl) {
+    append(Instruction(OP_JMP_IF_ZERO, std::nullopt, {cond, lbl}));
+  }
   void call(Operand dst, Operand name, std::vector<Operand> args = {}) {
     std::vector<Operand> srcs{};
     srcs.push_back(name);
@@ -216,6 +273,8 @@ public:
   Function *create_function(std::string_view name,
                             std::vector<std::string_view> parameters);
   Operand new_temp();
+  std::string new_label() { return std::format(".L{}", _label_counter++); }
+  void reset_labels() { _label_counter = 0; }
 
   void create_constant(std::string_view name, Operand value) {
     _constants.push_back(Constant{name, value});
@@ -239,6 +298,7 @@ public:
 private:
   std::vector<Function *> _functions{};
   size_t _temp_counter = 0;
+  size_t _label_counter = 0;
   std::vector<Constant> _constants{};
 };
 

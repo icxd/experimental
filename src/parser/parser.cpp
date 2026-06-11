@@ -128,6 +128,23 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
                         .type = type,
                         .value = value,
                     }};
+  } else if (peek().type == TOK_IF) {
+    Token if_ = try$(expect(TOK_IF, "Expected `if`"));
+    Expr *cond = try$(parse_expr());
+    std::vector<Stmt *> then_block = try$(parse_block());
+    std::vector<Stmt *> else_block{};
+    if (peek().type == TOK_ELSE) {
+      try$(expect(TOK_ELSE, "Expected `else`"));
+      else_block = try$(parse_block());
+    }
+    return new Stmt{.type = STMT_IF,
+                    .start = if_.start,
+                    .end = previous().end,
+                    .data = new stmt::If{
+                        .cond = cond,
+                        .then_block = then_block,
+                        .else_block = else_block,
+                    }};
   } else if (peek().type == TOK_RETURN) {
     Token return_ = try$(expect(TOK_RETURN, "Expected `return`"));
     std::optional<Expr *> expr = std::nullopt;

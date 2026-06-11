@@ -23,6 +23,7 @@ void Generator::gen_decl(Decl *decl) {
     for (const auto &param: proc->params)
       params.push_back(param.name.id_value);
 
+    _builder.reset_labels();
     Function *fn = _builder.create_function(proc->name.id_value, params);
     fn->linkage = proc->linkage;
     for (const auto &stmt: proc->body)
@@ -40,12 +41,37 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
   switch (stmt->type) {
   case STMT_BLOCK: {
     auto block = std::get<stmt::Block *>(stmt->data);
+    for (Stmt *inner: block->stmts)
+      gen_stmt(inner, fn);
   } break;
 
   case STMT_VAR: {
     auto var = std::get<stmt::Var *>(stmt->data);
     Operand src = gen_expr(var->value, fn);
     fn->assign(Operand::Variable(std::string(var->name.id_value)), src);
+  } break;
+
+  case STMT_IF: {
+    auto if_ = std::get<stmt::If *>(stmt->data);
+    Operand cond = gen_expr(if_->cond, fn);
+    std::string end_label = _builder.new_label();
+
+    if (!if_->else_block.empty()) {
+      std::string else_label = _builder.new_label();
+      fn->jmp_if_zero(cond, Operand::Label(else_label));
+      for (Stmt *inner: if_->then_block)
+        gen_stmt(inner, fn);
+      fn->jmp(Operand::Label(end_label));
+      fn->label(Operand::Label(else_label));
+      for (Stmt *inner: if_->else_block)
+        gen_stmt(inner, fn);
+      fn->label(Operand::Label(end_label));
+    } else {
+      fn->jmp_if_zero(cond, Operand::Label(end_label));
+      for (Stmt *inner: if_->then_block)
+        gen_stmt(inner, fn);
+      fn->label(Operand::Label(end_label));
+    }
   } break;
 
   case STMT_RETURN: {
@@ -61,7 +87,6 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
 }
 
 Operand Generator::gen_expr(Expr *expr, Function *fn) {
-  Operand operand;
   switch (expr->type) {
   case EXPR_INT: {
     auto int_ = std::get<expr::Int *>(expr->data);
@@ -70,7 +95,7 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_BOOL: {
     auto bool_ = std::get<expr::Bool *>(expr->data);
-    return Operand::ConstantInt(bool_->value);
+    return Operand::ConstantInt(bool_->value ? 1 : 0);
   }
 
   case EXPR_VAR: {
@@ -99,7 +124,12 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     case expr::Binary::BINOP_MINUS: fn->sub(dst, lhs, rhs); break;
     case expr::Binary::BINOP_STAR:  fn->mul(dst, lhs, rhs); break;
     case expr::Binary::BINOP_SLASH: fn->div(dst, lhs, rhs); break;
-    default:                        PANIC("todo");
+    case expr::Binary::BINOP_EQ:    fn->cmp_eq(dst, lhs, rhs); break;
+    case expr::Binary::BINOP_NEQ:   fn->cmp_neq(dst, lhs, rhs); break;
+    case expr::Binary::BINOP_LT:    fn->cmp_lt(dst, lhs, rhs); break;
+    case expr::Binary::BINOP_LTE:   fn->cmp_lte(dst, lhs, rhs); break;
+    case expr::Binary::BINOP_GT:    fn->cmp_gt(dst, lhs, rhs); break;
+    case expr::Binary::BINOP_GTE:   fn->cmp_gte(dst, lhs, rhs); break;
     }
 
     return dst;
@@ -132,4 +162,5 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     return dst;
   }
   }
+  std::unreachable();
 }

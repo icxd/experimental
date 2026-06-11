@@ -34,6 +34,7 @@ private:
 
   std::string _output;
   std::string _current_fn = "";
+  std::string _end_label = "";
   std::map<std::string, size_t> _stack_loc{};
   size_t _next_stack_loc = 16;
   std::map<std::string, std::map<std::string, std::string>> _register_maps;

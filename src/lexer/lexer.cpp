@@ -36,6 +36,8 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_CONST;
     else if (id == "else")
       type = TOK_ELSE;
+    else if (id == "if")
+      type = TOK_IF;
     else if (id == "extern")
       type = TOK_EXTERN;
     else if (id == "proc")

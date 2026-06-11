@@ -125,6 +125,20 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
     if (ret->value.has_value())
       print_expr(out, *ret->value, indent.next(true));
   } break;
+  case STMT_IF: {
+    auto if_ = std::get<stmt::If *>(stmt->data);
+    out << "\n";
+    print_expr(out, if_->cond, indent.next(false));
+    for (size_t i = 0; i < if_->then_block.size(); ++i)
+      print_stmt(out, if_->then_block[i],
+                 indent.next(i == if_->then_block.size() - 1));
+    if (!if_->else_block.empty()) {
+      out << indent.prefix() << "else\n";
+      for (size_t i = 0; i < if_->else_block.size(); ++i)
+        print_stmt(out, if_->else_block[i],
+                   indent.next(i == if_->else_block.size() - 1));
+    }
+  } break;
   }
 }
 

@@ -16,6 +16,7 @@ private:
   void emit_function(Function function) override;
   void emit_instruction(Instruction instr) override;
   std::string emit_operand(Operand operand) override;
+  std::string emit_value(Operand operand);
 
   const std::map<std::string, std::string> &current_regmap() const {
     return _register_maps.at(_current_fn);
@@ -34,6 +35,7 @@ private:
 
   std::string _output;
   std::string _current_fn = "";
+  std::string _end_label = "";
   std::map<std::string, size_t> _stack_loc{};
   size_t _next_stack_loc = 16;
   std::map<std::string, std::map<std::string, std::string>> _register_maps;

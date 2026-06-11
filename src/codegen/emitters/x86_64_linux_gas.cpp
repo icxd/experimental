@@ -1,3 +1,5 @@
+#include <utility>
+
 #include <codegen/emitters/x86_64_linux_gas.hpp>
 #include <codegen/regalloc.hpp>
 #include <ir/ir.hpp>
@@ -25,6 +27,7 @@ void X86_64LinuxGasEmitter::emit() {
   _output += ".text\n";
   for (const auto *function: _functions)
     emit_function(*function);
+  _output += ".section .note.GNU-stack,\"\",@progbits\n";
 }
 
 void X86_64LinuxGasEmitter::emit_function(Function function) {
@@ -69,8 +72,11 @@ void X86_64LinuxGasEmitter::emit_function(Function function) {
       _next_stack_loc += 16;
     }
 
+    _end_label = ".L_end_" + name;
     for (const auto &instr: function.instructions)
       emit_instruction(instr);
+
+    _output += _end_label + ":\n";
 
     if (has_call_instruction || local_vars > 0) {
       _output += "  mov rsp, rbp\n";
@@ -100,7 +106,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     assert(instr.srcs.size() == 1);
     Operand src = instr.srcs[0];
 
-    _output += "  mov r10, " + emit_operand(src) + "\n";
+    _output += "  mov r10, " + emit_value(src) + "\n";
     _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
   } break;
 
@@ -140,8 +146,8 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand src1 = instr.srcs[0];
     Operand src2 = instr.srcs[1];
 
-    _output += "  mov r10, " + emit_operand(src1) + "\n";
-    _output += "  add r10, " + emit_operand(src2) + "\n";
+    _output += "  mov r10, " + emit_value(src1) + "\n";
+    _output += "  add r10, " + emit_value(src2) + "\n";
 
     if (dst.type == OPERAND_VARIABLE)
       _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
@@ -149,9 +155,97 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
       _output += "  mov " + emit_operand(dst) + ", r10\n";
   } break;
 
-  case OP_SUB:
-  case OP_MUL:
-  case OP_DIV: break;
+  case OP_SUB: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    _output += "  mov r10, " + emit_value(src1) + "\n";
+    _output += "  sub r10, " + emit_value(src2) + "\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", r10\n";
+  } break;
+
+  case OP_MUL: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    _output += "  mov r10, " + emit_value(src1) + "\n";
+    _output += "  imul r10, " + emit_value(src2) + "\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", r10\n";
+  } break;
+
+  case OP_DIV: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    _output += "  mov rax, " + emit_value(src1) + "\n";
+    _output += "  cqo\n";
+    _output += "  mov rcx, " + emit_value(src2) + "\n";
+    _output += "  idiv rcx\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  mov [rsp + " + emit_operand(dst) + "], rax\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", rax\n";
+  } break;
+
+  case OP_CMP_EQ:
+  case OP_CMP_NEQ:
+  case OP_CMP_LT:
+  case OP_CMP_LTE:
+  case OP_CMP_GT:
+  case OP_CMP_GTE: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    Operand src1 = instr.srcs[0];
+    Operand src2 = instr.srcs[1];
+    const char *set = nullptr;
+    switch (instr.opcode) {
+    case OP_CMP_EQ:  set = "sete"; break;
+    case OP_CMP_NEQ: set = "setne"; break;
+    case OP_CMP_LT:  set = "setl"; break;
+    case OP_CMP_LTE: set = "setle"; break;
+    case OP_CMP_GT:  set = "setg"; break;
+    case OP_CMP_GTE: set = "setge"; break;
+    default: break;
+    }
+    _output += "  mov r10, " + emit_value(src1) + "\n";
+    _output += "  cmp r10, " + emit_value(src2) + "\n";
+    _output += std::format("  {} r10b\n", set);
+    _output += "  movzx r10, r10b\n";
+    if (dst.type == OPERAND_VARIABLE)
+      _output += "  mov [rsp + " + emit_operand(dst) + "], r10\n";
+    else
+      _output += "  mov " + emit_operand(dst) + ", r10\n";
+  } break;
+
+  case OP_LABEL: {
+    _output += emit_operand(instr.srcs[0]) + ":\n";
+  } break;
+
+  case OP_JMP: {
+    _output += "  jmp " + emit_operand(instr.srcs[0]) + "\n";
+  } break;
+
+  case OP_JMP_IF_ZERO: {
+    Operand cond = instr.srcs[0];
+    if (cond.type == OPERAND_VARIABLE)
+      _output += "  cmp qword ptr " + emit_value(cond) + ", 0\n";
+    else if (cond.type == OPERAND_TEMPORARY)
+      _output += "  test " + emit_value(cond) + ", " + emit_value(cond) + "\n";
+    else {
+      _output += "  mov r10, " + emit_value(cond) + "\n";
+      _output += "  test r10, r10\n";
+    }
+    _output += "  je " + emit_operand(instr.srcs[1]) + "\n";
+  } break;
 
   case OP_CALL: {
     assert(instr.dst.has_value());
@@ -165,7 +259,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
       if (arg.type == OPERAND_VARIABLE)
         _output += "  mov " + reg + ", [rsp + " + emit_operand(arg) + "]\n";
       else
-        _output += "  mov " + reg + ", " + emit_operand(arg) + "\n";
+        _output += "  mov " + reg + ", " + emit_value(arg) + "\n";
     }
 
     _output += "  call " + emit_operand(name) + "\n";
@@ -177,14 +271,31 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
   } break;
 
   case OP_RET: {
-    assert(instr.srcs.size() == 1);
-    Operand src = instr.srcs[0];
-
-    if (src.type == OPERAND_VARIABLE)
-      _output += "  mov rax, [rsp + " + emit_operand(src) + "]\n";
-    else
-      _output += "  mov rax, " + emit_operand(src) + "\n";
+    if (!instr.srcs.empty()) {
+      Operand src = instr.srcs[0];
+      if (src.type == OPERAND_VARIABLE)
+        _output += "  mov rax, [rsp + " + emit_operand(src) + "]\n";
+      else
+        _output += "  mov rax, " + emit_value(src) + "\n";
+    }
+    _output += "  jmp " + _end_label + "\n";
   } break;
+  }
+}
+
+std::string X86_64LinuxGasEmitter::emit_value(Operand operand) {
+  switch (operand.type) {
+  case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
+  case OPERAND_CONSTANT:     return emit_value(*get_constant(operand.name));
+  case OPERAND_VARIABLE:
+    return "[rsp + " + std::to_string(_stack_loc.at(operand.name)) + "]";
+  case OPERAND_TEMPORARY: {
+    const auto &reg = current_regmap().at(operand.name);
+    if (reg.empty())
+      PANIC("spilled temporary `{}` is not supported yet", operand.name);
+    return reg;
+  }
+  default: PANIC("unexpected operand in value position");
   }
 }
 
@@ -193,7 +304,14 @@ std::string X86_64LinuxGasEmitter::emit_operand(Operand operand) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
-  case OPERAND_TEMPORARY:    return current_regmap().at(operand.name);
-  case OPERAND_FUNCTION:     return operand.name;
+  case OPERAND_TEMPORARY: {
+    const auto &reg = current_regmap().at(operand.name);
+    if (reg.empty())
+      PANIC("spilled temporary `{}` is not supported yet", operand.name);
+    return reg;
   }
+  case OPERAND_FUNCTION: return operand.name;
+  case OPERAND_LABEL:    return operand.name;
+  }
+  std::unreachable();
 }
