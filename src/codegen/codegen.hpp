@@ -53,8 +53,9 @@ public:
                               const std::vector<Function *> &functions);
 
   virtual void emit() = 0;
+  virtual const std::string &output() const = 0;
 
-private:
+protected:
   virtual void emit_function(Function function) = 0;
   virtual void emit_instruction(Instruction instr) = 0;
   virtual std::string emit_operand(Operand operand) = 0;

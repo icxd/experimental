@@ -8,6 +8,7 @@ enum TokenType {
 
   TOK_CONST,
   TOK_ELSE,
+  TOK_IF,
   TOK_EXTERN,
   TOK_PROC,
   TOK_RETURN,
@@ -64,7 +65,8 @@ struct Token {
     case TOK_CBRACE:    return std::format("TOK_CBRACE");
     case TOK_COMMA:     return std::format("TOK_COMMA");
     case TOK_SEMICOLON: return std::format("TOK_SEMICOLON");
-    case TOK_PLUS:      return std::format("TOK_STAR");
+    case TOK_PLUS:      return std::format("TOK_PLUS");
+    case TOK_IF:        return std::format("TOK_IF");
     case TOK_MINUS:     return std::format("TOK_MINUS");
     case TOK_STAR:      return std::format("TOK_STAR");
     case TOK_SLASH:     return std::format("TOK_SLASH");

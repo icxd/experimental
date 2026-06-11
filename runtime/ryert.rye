@@ -1,3 +1,8 @@
+// Runtime glue included in every compilation.
+//
+// Linux: libc calls `main` directly — no wrapper needed.
+// macOS: `_main` receives argc/argv/envp from the loader and forwards to `main`.
+
 extern proc main(argc int, argv **int) int;
 
 when TARGET_OS == OS_MACOS {
@@ -6,5 +11,6 @@ when TARGET_OS == OS_MACOS {
 
     return retcode;
   }
-} 
-
+} else {
+  const __rye_linux int = 0;
+}

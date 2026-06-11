@@ -1,33 +1,34 @@
 #include <utility>
 
-#include <codegen/emitters/aarch64_macos_gas.hpp>
+#include <codegen/emitters/aarch64_linux_gas.hpp>
 #include <codegen/regalloc.hpp>
 #include <ir/ir.hpp>
 
-void Aarch64MacosGasEmitter::emit() {
+void Aarch64LinuxGasEmitter::emit() {
   _output += ".text\n";
   for (const auto *function: _functions)
     emit_function(*function);
+  _output += ".section .note.GNU-stack,\"\",@progbits\n";
 }
 
 static size_t count_local_variables(const Function &function) {
   std::set<std::string> local_vars;
   for (const auto &instr: function.instructions) {
-    if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE) {
+    if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE)
       local_vars.insert(instr.dst->name);
-    }
     for (const auto &src: instr.srcs) {
-      if (src.type == OPERAND_VARIABLE) {
+      if (src.type == OPERAND_VARIABLE)
         local_vars.insert(src.name);
-      }
     }
   }
   return local_vars.size();
 }
 
-void Aarch64MacosGasEmitter::emit_function(Function function) {
+void Aarch64LinuxGasEmitter::emit_function(Function function) {
   std::string name(function.name);
   _current_fn = name;
+  _stack_loc.clear();
+  _next_stack_loc = 16;
 
   if (function.linkage == LINK_INTERN) {
     auto regmap = allocate_registers(function.instructions, _registers);
@@ -41,9 +42,6 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
 
     _output += ".globl " + name + "\n";
     _output += name + ":\n";
-
-    // If the function contains a call instruction, we need to ensure that
-    // the stack pointer is aligned to 16 bytes.
 
     bool has_call_instruction = false;
     for (const auto &instr: function.instructions) {
@@ -69,9 +67,8 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
     }
 
     _end_label = ".L_end_" + name;
-    for (const auto &instr: function.instructions) {
+    for (const auto &instr: function.instructions)
       emit_instruction(instr);
-    }
 
     _output += _end_label + ":\n";
 
@@ -86,7 +83,7 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
   }
 }
 
-void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
+void Aarch64LinuxGasEmitter::emit_instruction(Instruction instr) {
   _output += "  // " + instr.to_string() + "\n";
 
   if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE) {
@@ -95,30 +92,28 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   }
 
   switch (instr.opcode) {
-  case OP_NOP:    break;
+  case OP_NOP: break;
 
   case OP_ASSIGN: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 1);
     Operand src = instr.srcs[0];
 
     _output += "  mov x9, " + emit_operand(src) + "\n";
-    _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+    _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
   } break;
 
   case OP_ADDROF: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 1);
     Operand src = instr.srcs[0];
 
-    _output += "  add x9, sp, " + emit_operand(src) + "\n";
+    _output += "  add x9, sp, #" + emit_operand(src) + "\n";
 
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -126,15 +121,14 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   case OP_DEREF: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 1);
     Operand src = instr.srcs[0];
 
-    _output += "  ldr x9, [sp, " + emit_operand(src) + "]\n";
+    _output += "  ldr x9, [sp, #" + emit_operand(src) + "]\n";
     _output += "  ldr x9, [x9]\n";
 
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -142,7 +136,6 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   case OP_ADD: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 2);
     Operand src1 = instr.srcs[0];
     Operand src2 = instr.srcs[1];
@@ -152,7 +145,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     _output += "  add x9, x10, x11\n";
 
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -166,7 +159,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     _output += "  mov x11, " + emit_operand(src2) + "\n";
     _output += "  sub x9, x10, x11\n";
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -180,7 +173,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     _output += "  mov x11, " + emit_operand(src2) + "\n";
     _output += "  mul x9, x10, x11\n";
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -194,7 +187,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     _output += "  mov x11, " + emit_operand(src2) + "\n";
     _output += "  sdiv x9, x10, x11\n";
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -224,7 +217,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     _output += "  cmp x10, x11\n";
     _output += std::format("  cset x9, {}\n", cond);
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x9, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x9\n";
   } break;
@@ -240,7 +233,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   case OP_JMP_IF_ZERO: {
     Operand cond = instr.srcs[0];
     if (cond.type == OPERAND_VARIABLE)
-      _output += "  ldr x9, [sp, " + emit_operand(cond) + "]\n";
+      _output += "  ldr x9, [sp, #" + emit_operand(cond) + "]\n";
     else
       _output += "  mov x9, " + emit_operand(cond) + "\n";
     _output += "  cbz x9, " + emit_operand(instr.srcs[1]) + "\n";
@@ -249,24 +242,22 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   case OP_CALL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() >= 1);
     Operand name = instr.srcs[0];
 
     for (size_t i = 1; i < instr.srcs.size(); i++) {
       Operand arg = instr.srcs[i];
-
-      if (dst.type == OPERAND_VARIABLE)
-        _output += "  ldr x" + std::to_string(i - 1) + ", [sp, " +
+      if (arg.type == OPERAND_VARIABLE)
+        _output += "  ldr x" + std::to_string(i - 1) + ", [sp, #" +
                    emit_operand(arg) + "]\n";
       else
-        _output +=
-            "  mov " + emit_operand(arg) + ", x" + std::to_string(i - 1) + "\n";
+        _output += "  mov x" + std::to_string(i - 1) + ", " +
+                   emit_operand(arg) + "\n";
     }
     _output += "  bl " + emit_operand(name) + "\n";
 
     if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x0, [sp, " + emit_operand(dst) + "]\n";
+      _output += "  str x0, [sp, #" + emit_operand(dst) + "]\n";
     else
       _output += "  mov " + emit_operand(dst) + ", x0\n";
   } break;
@@ -275,7 +266,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     if (!instr.srcs.empty()) {
       Operand src = instr.srcs[0];
       if (src.type == OPERAND_VARIABLE)
-        _output += "  ldr x0, [sp, " + emit_operand(src) + "]\n";
+        _output += "  ldr x0, [sp, #" + emit_operand(src) + "]\n";
       else
         _output += "  mov x0, " + emit_operand(src) + "\n";
     }
@@ -284,7 +275,7 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   }
 }
 
-std::string Aarch64MacosGasEmitter::emit_operand(Operand operand) {
+std::string Aarch64LinuxGasEmitter::emit_operand(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));

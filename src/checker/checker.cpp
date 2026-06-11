@@ -1,5 +1,7 @@
-#include <__expected/unexpected.h>
+#include <utility>
+
 #include <checker/checker.hpp>
+#include <host.hpp>
 #include "parser/ast.hpp"
 
 ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
@@ -8,7 +10,7 @@ ErrorOr<void> Checker::check_decls(const std::vector<Decl *> &decls) {
   _consts.push_back(CheckedConst{"OS_MACOS", new Type{TYPE_INT},
                                  new Expr{EXPR_INT, 0, 0, new expr::Int{1}}});
   _consts.push_back(CheckedConst{"TARGET_OS", new Type{TYPE_INT},
-                                 new Expr{EXPR_INT, 0, 0, new expr::Int{1}}});
+                                 new Expr{EXPR_INT, 0, 0, new expr::Int{HOST_OS}}});
 
   for (Decl *decl: decls)
     try$(check_decl(decl, _global_scope));
@@ -94,7 +96,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     for (auto *stmt: proc->body)
       try$(check_stmt(stmt, proc_scope));
 
-    _current_proc_id = SIZE_T_MAX;
+    _current_proc_id = std::numeric_limits<size_t>::max();
 
     return {};
   }
@@ -144,6 +146,26 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
   switch (stmt->type) {
   case STMT_BLOCK: {
     stmt::Block *block = std::get<stmt::Block *>(stmt->data);
+    for (Stmt *inner: block->stmts)
+      try$(check_stmt(inner, scope));
+    return {};
+  }
+
+  case STMT_IF: {
+    stmt::If *if_ = std::get<stmt::If *>(stmt->data);
+    Type *cond_type = try$(check_expr(if_->cond, scope));
+    if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+      return std::unexpected(
+          Error("Condition has to be a boolean", if_->cond->start,
+                if_->cond->end)
+              .with_hint(std::format("Expected `bool`, found `{}`",
+                                     cond_type->to_string())));
+    }
+    if_->cond->expr_type = new Type{TYPE_BOOL, if_->cond->start, if_->cond->end};
+    for (Stmt *inner: if_->then_block)
+      try$(check_stmt(inner, scope));
+    for (Stmt *inner: if_->else_block)
+      try$(check_stmt(inner, scope));
     return {};
   }
 
@@ -411,13 +433,29 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
                       new expr::Int{lhs_value + rhs_value}};
     }
 
-    case expr::Binary::BINOP_MINUS:
-    case expr::Binary::BINOP_STAR:
-    case expr::Binary::BINOP_SLASH:
-      return std::unexpected(
-          Error("Cannot evaluate non-constant expression at compile time",
-                expr->start, expr->end)
-              .with_hint("Not a constant expression"));
+    case expr::Binary::BINOP_MINUS: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant arithmetic");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_INT, expr->start, expr->end, new expr::Int{l - r}};
+    }
+
+    case expr::Binary::BINOP_STAR: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant arithmetic");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_INT, expr->start, expr->end, new expr::Int{l * r}};
+    }
+
+    case expr::Binary::BINOP_SLASH: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant arithmetic");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_INT, expr->start, expr->end, new expr::Int{l / r}};
+    }
 
     case expr::Binary::BINOP_EQ: {
       if (lhs->type != EXPR_INT)
@@ -431,16 +469,47 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
                       new expr::Bool{lhs_value == rhs_value}};
     }
 
-    case expr::Binary::BINOP_NEQ: break;
-
-    case expr::Binary::BINOP_LT:  break;
-
-    case expr::Binary::BINOP_LTE: break;
-
-    case expr::Binary::BINOP_GT:  break;
-
-    case expr::Binary::BINOP_GTE: break;
+    case expr::Binary::BINOP_NEQ: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant comparisons");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l != r}};
     }
+
+    case expr::Binary::BINOP_LT: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant comparisons");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l < r}};
+    }
+
+    case expr::Binary::BINOP_LTE: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant comparisons");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l <= r}};
+    }
+
+    case expr::Binary::BINOP_GT: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant comparisons");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l > r}};
+    }
+
+    case expr::Binary::BINOP_GTE: {
+      if (lhs->type != EXPR_INT || rhs->type != EXPR_INT)
+        PANIC("TODO: support non-int constant comparisons");
+      int64_t l = std::get<expr::Int *>(lhs->data)->value;
+      int64_t r = std::get<expr::Int *>(rhs->data)->value;
+      return new Expr{EXPR_BOOL, expr->start, expr->end, new expr::Bool{l >= r}};
+    }
+    }
+    std::unreachable();
   }
 
   default:

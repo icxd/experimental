@@ -64,13 +64,19 @@ namespace stmt {
     std::optional<Expr *> value;
   };
 
+  struct If {
+    Expr *cond;
+    std::vector<Stmt *> then_block;
+    std::vector<Stmt *> else_block;
+  };
+
 } // namespace stmt
 
-enum StmtType { STMT_BLOCK, STMT_VAR, STMT_RETURN };
+enum StmtType { STMT_BLOCK, STMT_VAR, STMT_RETURN, STMT_IF };
 struct Stmt {
   StmtType type;
   size_t start, end;
-  std::variant<stmt::Block *, stmt::Var *, stmt::Return *> data;
+  std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *> data;
 };
 
 namespace expr {

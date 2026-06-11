@@ -1,0 +1,6 @@
+/// 69
+
+proc main() int {
+  var a int = 100 - 31;
+  return a;
+}

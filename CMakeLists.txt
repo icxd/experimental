@@ -1,12 +1,16 @@
 cmake_minimum_required(VERSION 3.28)
+
+if(NOT DEFINED CMAKE_CXX_COMPILER)
+  find_program(GXX NAMES g++-14 g++ REQUIRED)
+  set(CMAKE_CXX_COMPILER "${GXX}" CACHE STRING "" FORCE)
+endif()
+
 project(rye CXX)
 
-# Set default build type to Debug if not specified
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# Enable debug symbols (optional extra flags)
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
 set(CMAKE_C_FLAGS_DEBUG "-g")
 
@@ -22,11 +26,7 @@ CPMAddPackage(
     GIT_TAG v0.9.7
 )
 
-include_directories(libs/magic_enum/include)
-
-include_directories(src)
-
-add_executable(rye 
+add_executable(rye
     src/main.cpp
     src/lexer/lexer.cpp
     src/parser/parser.cpp
@@ -35,4 +35,14 @@ add_executable(rye
     src/ir/irgen.cpp
     src/codegen/regalloc.cpp
     src/codegen/codegen.cpp
-    src/codegen/emitters/aarch64_macos_gas.cpp)
+    src/codegen/emitters/aarch64_macos_gas.cpp
+    src/codegen/emitters/aarch64_linux_gas.cpp
+    src/codegen/emitters/x86_64_linux_gas.cpp)
+
+target_include_directories(rye PRIVATE src)
+target_link_libraries(rye PRIVATE magic_enum::magic_enum)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(rye PRIVATE -stdlib=libstdc++)
+  target_link_options(rye PRIVATE -stdlib=libstdc++)
+endif()
