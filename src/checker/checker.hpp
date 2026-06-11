@@ -27,6 +27,7 @@ public:
 
   const std::vector<CheckedProc> &procs() const { return _procs; }
   const std::vector<CheckedConst> &consts() const { return _consts; }
+  const std::vector<CheckedStruct> &structs() const { return _structs; }
   const std::vector<std::string> &imports() const { return _imports; }
 
 private:
@@ -75,6 +76,15 @@ private:
                                             size_t end);
 
   ErrorOr<void> check_import(decl::Import *import, size_t start, size_t end);
+  ErrorOr<void> check_struct(decl::Struct *strukt, size_t start, size_t end);
+  ErrorOr<CheckedStruct> resolve_struct(std::string_view name, size_t start,
+                                        size_t end);
+  std::optional<CheckedStruct> find_local_struct(std::string_view name);
+  ErrorOr<CheckedStruct> find_imported_struct(std::string_view name,
+                                              size_t start, size_t end);
+  ErrorOr<CheckedStruct> find_prelude_struct(std::string_view name,
+                                             size_t start, size_t end);
+  size_t type_size(Type *type);
 
 private:
   Scope *_global_scope = new Scope;
@@ -89,6 +99,7 @@ private:
   std::unordered_map<std::string, ComptimeProcInfo> _comptime_procs = {};
   size_t _current_proc_id = std::numeric_limits<size_t>::max();
   std::vector<CheckedConst> _consts = {};
+  std::vector<CheckedStruct> _structs = {};
   size_t _loop_depth = 0;
 };
 

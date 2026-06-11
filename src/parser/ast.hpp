@@ -50,6 +50,16 @@ namespace decl {
     Token path;
   };
 
+  struct StructField {
+    Token name;
+    Type *type;
+  };
+
+  struct Struct {
+    Token name;
+    std::vector<StructField> fields;
+  };
+
 } // namespace decl
 
 enum DeclType {
@@ -58,12 +68,13 @@ enum DeclType {
   DECL_WHEN,
   DECL_IMPORT,
   DECL_COMPTIME_BLOCK,
+  DECL_STRUCT,
 };
 struct Decl {
   DeclType type;
   size_t start, end;
   std::variant<decl::Const *, decl::Proc *, decl::When *, decl::Import *,
-               decl::ComptimeBlock *>
+               decl::ComptimeBlock *, decl::Struct *>
       data;
 };
 
@@ -201,6 +212,25 @@ namespace expr {
     std::vector<Expr *> arguments;
   };
 
+  struct Field {
+    Expr *base;
+    Token field;
+  };
+
+  struct StructLitField {
+    Token name;
+    Expr *value;
+  };
+
+  struct StructLit {
+    Token type_name;
+    std::vector<StructLitField> fields;
+  };
+
+  struct String {
+    Token value;
+  };
+
 } // namespace expr
 
 static std::string binop_to_string(expr::Binary::BinOp op) {
@@ -232,13 +262,17 @@ enum ExprType {
   EXPR_CALL,
   EXPR_COMPTIME_CALL,
   EXPR_NOT,
+  EXPR_FIELD,
+  EXPR_STRUCT_LIT,
+  EXPR_STRING,
 };
 struct Expr {
   ExprType type;
   size_t start, end;
   std::variant<expr::Int *, expr::Bool *, expr::Var *, expr::Group *,
                expr::Binary *, expr::Ref *, expr::Deref *, expr::Call *,
-               expr::ComptimeCall *, expr::Not *>
+               expr::ComptimeCall *, expr::Not *, expr::Field *,
+               expr::StructLit *, expr::String *>
       data;
   Type *expr_type = nullptr;
 
@@ -317,6 +351,29 @@ public:
       auto x = std::get<expr::Not *>(data);
       return std::format("!{}", x->expr->to_string());
     }
+
+    case EXPR_FIELD: {
+      auto x = std::get<expr::Field *>(data);
+      return std::format("{}.{}", x->base->to_string(), x->field.id_value);
+    }
+
+    case EXPR_STRUCT_LIT: {
+      auto x = std::get<expr::StructLit *>(data);
+      std::string out = std::format("{}{{", x->type_name.id_value);
+      for (size_t i = 0; i < x->fields.size(); i++) {
+        out += std::format("{} = {}", x->fields[i].name.id_value,
+                           x->fields[i].value->to_string());
+        if (i + 1 < x->fields.size())
+          out += ", ";
+      }
+      out += "}";
+      return out;
+    }
+
+    case EXPR_STRING: {
+      auto x = std::get<expr::String *>(data);
+      return std::format("\"{}\"", x->value.string_value);
+    }
     }
     std::unreachable();
   }
@@ -324,7 +381,8 @@ public:
   bool is_lvalue() const {
     switch (type) {
     case EXPR_VAR:
-    case EXPR_DEREF:  return true;
+    case EXPR_DEREF:
+    case EXPR_FIELD: return true;
 
     case EXPR_INT:
     case EXPR_BOOL:
@@ -333,7 +391,9 @@ public:
     case EXPR_REF:
     case EXPR_CALL:
     case EXPR_COMPTIME_CALL:
-    case EXPR_NOT:    return false;
+    case EXPR_NOT:
+    case EXPR_STRUCT_LIT:
+    case EXPR_STRING: return false;
     }
     std::unreachable();
   }
@@ -345,13 +405,17 @@ namespace type {
     Type *inner;
   };
 
+  struct Struct {
+    std::string_view name;
+  };
+
 } // namespace type
 
-enum TypeType { TYPE_VOID, TYPE_BOOL, TYPE_INT, TYPE_PTR };
+enum TypeType { TYPE_VOID, TYPE_BOOL, TYPE_INT, TYPE_BYTE, TYPE_PTR, TYPE_STRUCT };
 struct Type {
   TypeType type;
   size_t start, end;
-  std::variant<type::Ptr *> data;
+  std::variant<type::Ptr *, type::Struct *> data;
 
 public:
   std::string to_string() const {
@@ -359,10 +423,13 @@ public:
     case TYPE_VOID: return "void";
     case TYPE_BOOL: return "bool";
     case TYPE_INT:  return "int";
+    case TYPE_BYTE: return "byte";
     case TYPE_PTR:  {
       Type *inner = std::get<type::Ptr *>(data)->inner;
       return std::format("*{}", inner->to_string());
     }
+    case TYPE_STRUCT:
+      return std::string(std::get<type::Struct *>(data)->name);
     }
     std::unreachable();
   }

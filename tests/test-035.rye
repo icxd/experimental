@@ -1,0 +1,6 @@
+/// 5
+
+proc main() int {
+  var s String = "hello";
+  return s.len;
+}

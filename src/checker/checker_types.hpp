@@ -45,3 +45,15 @@ struct CheckedConst {
   Type *type;
   Expr *expr;
 };
+
+struct CheckedStructField {
+  std::string_view name;
+  Type *type;
+  size_t offset;
+};
+
+struct CheckedStruct {
+  std::string_view name;
+  std::vector<CheckedStructField> fields;
+  size_t size;
+};

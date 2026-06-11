@@ -71,10 +71,12 @@ for init_stmt; condition; step_stmt {
 
 Supported today:
 
-- Types: `void`, `bool`, `int`, pointers (`*int`, `**int`, …)
-- Declarations: `proc`, `const`, `extern proc`, compile-time `when` (top-level and in procedure bodies)
+- Types: `void`, `bool`, `int`, `byte`, pointers (`*int`, `*byte`, …), and `struct` types
+- Declarations: `proc`, `const`, `struct`, `extern proc`, compile-time `when` (top-level and in procedure bodies)
 - Statements: `var`, `name = expr` assignment, `return`, `if` / `else`, `while`, `for`, `break`, `continue`, blocks `{ ... }`
-- Expressions: arithmetic, comparisons, logical operators (`&&`, `||`, `!`), pointers (`&`, `*`), calls
+- Expressions: arithmetic, comparisons, logical operators (`&&`, `||`, `!`), pointers (`&`, `*`), field access (`.field`), struct literals (`Type{ field = expr }`), string literals (`"hello"`), calls
+
+The compiler always links `std/string.rye`, which defines the standard `String` struct (`ptr *byte`, `len int`). String literals codegen to `String{ ptr = <rodata>, len = N }`.
 
 `break` exits the nearest enclosing `while` or `for` loop. `continue` skips to the next iteration — the loop condition for `while`, or the step expression for `for`.
 

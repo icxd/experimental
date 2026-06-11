@@ -36,6 +36,11 @@ inline void print_type(std::ostream &out, Type *type) {
     print_type(out, std::get<type::Ptr *>(type->data)->inner);
     out << "\033[0m";
     break;
+  case TYPE_BYTE: out << "\033[36mbyte\033[0m"; break;
+  case TYPE_STRUCT:
+    out << "\033[36m" << std::get<type::Struct *>(type->data)->name
+        << "\033[0m";
+    break;
   }
 }
 
@@ -113,6 +118,30 @@ inline void print_expr(std::ostream &out, Expr *expr, Indent indent = {}) {
     out << "\n";
     print_expr(out, std::get<expr::Not *>(expr->data)->expr, indent.next(true));
     break;
+
+  case EXPR_FIELD: {
+    auto field = std::get<expr::Field *>(expr->data);
+    out << ".\033[34m" << field->field.id_value << "\033[0m\n";
+    print_expr(out, field->base, indent.next(true));
+    break;
+  }
+
+  case EXPR_STRUCT_LIT: {
+    auto lit = std::get<expr::StructLit *>(expr->data);
+    out << " \033[36m" << lit->type_name.id_value << "\033[0m\n";
+    for (size_t i = 0; i < lit->fields.size(); ++i) {
+      out << indent.next(i == lit->fields.size() - 1).prefix();
+      out << "\033[34m" << lit->fields[i].name.id_value << "\033[0m\n";
+      print_expr(out, lit->fields[i].value, indent.next(true));
+    }
+    break;
+  }
+
+  case EXPR_STRING: {
+    auto str = std::get<expr::String *>(expr->data);
+    out << " \033[33m\"" << str->value.string_value << "\"\033[0m\n";
+    break;
+  }
   }
 }
 
@@ -272,6 +301,18 @@ static inline void print_decl(std::ostream &out, Decl *decl,
     for (size_t i = 0; i < block->decls.size(); ++i)
       print_decl(out, block->decls[i],
                  indent.next(i == block->decls.size() - 1));
+    break;
+  }
+
+  case DECL_STRUCT: {
+    auto strukt = std::get<decl::Struct *>(decl->data);
+    out << " \033[36m" << strukt->name.id_value << "\033[0m\n";
+    for (size_t i = 0; i < strukt->fields.size(); ++i) {
+      out << indent.next(i == strukt->fields.size() - 1).prefix();
+      out << "\033[34m" << strukt->fields[i].name.id_value << "\033[0m ";
+      print_type(out, strukt->fields[i].type);
+      out << "\n";
+    }
     break;
   }
   }

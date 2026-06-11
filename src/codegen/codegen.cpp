@@ -5,7 +5,8 @@
 
 Emitter *Emitter::get_emitter(Target target,
                               const std::vector<Constant> &constants,
-                              const std::vector<Function *> &functions) {
+                              const std::vector<Function *> &functions,
+                              const std::vector<RodataEntry> &rodata) {
   if (!target.is_valid_target())
     throw std::runtime_error("invalid target");
 
@@ -16,11 +17,11 @@ Emitter *Emitter::get_emitter(Target target,
   else if (target == TARGET_X86_64_LINUX_NASM)
     throw std::runtime_error("target not supported yet");
   else if (target == TARGET_X86_64_LINUX_GAS)
-    return new X86_64LinuxGasEmitter(constants, functions);
+    return new X86_64LinuxGasEmitter(constants, functions, rodata);
   else if (target == TARGET_AARCH64_MACOS_GAS)
-    return new Aarch64MacosGasEmitter(constants, functions);
+    return new Aarch64MacosGasEmitter(constants, functions, rodata);
   else if (target == TARGET_AARCH64_LINUX_GAS)
-    return new Aarch64LinuxGasEmitter(constants, functions);
+    return new Aarch64LinuxGasEmitter(constants, functions, rodata);
 
   throw std::runtime_error("invalid target");
 }

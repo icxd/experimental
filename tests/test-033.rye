@@ -1,0 +1,6 @@
+/// 5
+
+proc main() int {
+  var b byte = 5;
+  return b;
+}

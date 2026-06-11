@@ -7,8 +7,9 @@
 class X86_64LinuxGasEmitter : public Emitter {
 public:
   X86_64LinuxGasEmitter(const std::vector<Constant> &constants,
-                        const std::vector<Function *> &functions) :
-      _constants(constants), _functions(functions) {}
+                        const std::vector<Function *> &functions,
+                        const std::vector<RodataEntry> &rodata) :
+      _constants(constants), _functions(functions), _rodata(rodata) {}
 
   void emit() override;
   const std::string &output() const override { return _output; }
@@ -34,11 +35,14 @@ private:
 
   std::vector<Constant> _constants;
   std::vector<Function *> _functions;
+  std::vector<RodataEntry> _rodata;
 
   std::string _output;
   std::string _current_fn = "";
+  const Function *_current_function = nullptr;
   std::string _end_label = "";
   std::map<std::string, size_t> _stack_loc{};
+  std::map<std::string, size_t> _var_sizes{};
   std::map<std::string, size_t> _spill_loc{};
   size_t _next_stack_loc = 16;
   std::map<std::string, std::map<std::string, TempAllocation>> _register_maps;

@@ -15,8 +15,9 @@ public:
 private:
   ErrorOr<Decl *> parse_decl();
   ErrorOr<Stmt *> parse_stmt();
-  ErrorOr<Expr *> parse_expr(size_t min_prec = 0);
-  ErrorOr<Expr *> parse_primary_expr();
+  ErrorOr<Expr *> parse_expr(size_t min_prec = 0, bool allow_struct_lit = true);
+  ErrorOr<Expr *> parse_postfix_expr(bool allow_struct_lit = true);
+  ErrorOr<Expr *> parse_primary_expr(bool allow_struct_lit = true);
   ErrorOr<Type *> parse_type();
 
   ErrorOr<Stmt *> parse_block_stmt();

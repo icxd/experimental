@@ -110,7 +110,7 @@ ErrorOr<Decl *> Parser::parse_decl() {
                                     .data = const_data});
   } else if (peek().type == TOK_WHEN) {
     Token when = try$(expect(TOK_WHEN, "Expected `when`"));
-    Expr *condition = try$(parse_expr());
+    Expr *condition = try$(parse_expr(0, false));
 
     std::vector<Decl *> when_block{};
     Token obrace = try$(expect(TOK_OBRACE, "Expected {"));
@@ -147,13 +147,35 @@ ErrorOr<Decl *> Parser::parse_decl() {
                                     .start = import.start,
                                     .end = semi.end,
                                     .data = import_data});
+  } else if (peek().type == TOK_STRUCT) {
+    Token struct_ = try$(expect(TOK_STRUCT, "Expected `struct`"));
+    Token name = try$(expect(TOK_ID, "Expected struct name"));
+    Token obrace = try$(expect(TOK_OBRACE, "Expected `{`"));
+    std::vector<decl::StructField> fields{};
+    while (_pos < _tokens.size() && peek().type != TOK_CBRACE) {
+      Token field_name =
+          try$(expect(TOK_ID, "Expected field name in struct"));
+      Type *field_type = try$(parse_type());
+      try$(expect(TOK_SEMICOLON, "Expected `;` after struct field"));
+      fields.push_back(decl::StructField{field_name, field_type});
+    }
+    Token cbrace = try$(expect(TOK_CBRACE, "Expected `}`"));
+
+    auto *struct_data = _arena.create<decl::Struct>(
+        decl::Struct{.name = name, .fields = fields});
+
+    return _arena.create<Decl>(Decl{.type = DECL_STRUCT,
+                                    .start = struct_.start,
+                                    .end = cbrace.end,
+                                    .data = struct_data});
   } else if (is_comptime) {
     return std::unexpected(
         Error("Expected `proc` or `{` after `comptime`", peek().start,
               peek().end));
   } else {
     return std::unexpected(
-        Error("Expected `proc`, `const`, `import`, `when`, or `comptime`",
+        Error("Expected `proc`, `const`, `struct`, `import`, `when`, or "
+              "`comptime`",
               peek().start, peek().end));
   }
 }
@@ -197,7 +219,7 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     });
   } else if (peek().type == TOK_WHILE) {
     Token while_ = try$(expect(TOK_WHILE, "Expected `while`"));
-    Expr *cond = try$(parse_expr());
+    Expr *cond = try$(parse_expr(0, false));
     std::vector<Stmt *> body = try$(parse_block());
     return _arena.create<Stmt>(Stmt{
         .type = STMT_WHILE,
@@ -208,7 +230,7 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
   } else if (peek().type == TOK_FOR) {
     Token for_ = try$(expect(TOK_FOR, "Expected `for`"));
     Stmt *init = try$(parse_stmt());
-    Expr *cond = try$(parse_expr());
+    Expr *cond = try$(parse_expr(0, false));
     try$(expect(TOK_SEMICOLON, "Expected `;` after for-condition"));
     if (peek().type != TOK_ID || peek(1).type != TOK_EQ) {
       return std::unexpected(
@@ -241,7 +263,7 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     });
   } else if (peek().type == TOK_WHEN) {
     Token when = try$(expect(TOK_WHEN, "Expected `when`"));
-    Expr *cond = try$(parse_expr());
+    Expr *cond = try$(parse_expr(0, false));
 
     std::vector<Stmt *> when_block = try$(parse_block());
     std::vector<Stmt *> else_block{};
@@ -262,7 +284,7 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     });
   } else if (peek().type == TOK_IF) {
     Token if_ = try$(expect(TOK_IF, "Expected `if`"));
-    Expr *cond = try$(parse_expr());
+    Expr *cond = try$(parse_expr(0, false));
     std::vector<Stmt *> then_block = try$(parse_block());
     std::vector<Stmt *> else_block{};
     if (peek().type == TOK_ELSE) {
@@ -374,8 +396,8 @@ expr::Binary::BinOp tok_to_binop(Token tok) {
   }
 }
 
-ErrorOr<Expr *> Parser::parse_expr(size_t min_prec) {
-  Expr *lhs = try$(parse_primary_expr());
+ErrorOr<Expr *> Parser::parse_expr(size_t min_prec, bool allow_struct_lit) {
+  Expr *lhs = try$(parse_postfix_expr(allow_struct_lit));
 
   for (;;) {
     Token op = peek();
@@ -389,7 +411,7 @@ ErrorOr<Expr *> Parser::parse_expr(size_t min_prec) {
 
     consume();
 
-    Expr *rhs = try$(parse_expr(prec + 1));
+    Expr *rhs = try$(parse_expr(prec + 1, allow_struct_lit));
 
     auto *binary_data = _arena.create<expr::Binary>(expr::Binary{
         .lhs = lhs,
@@ -408,10 +430,29 @@ ErrorOr<Expr *> Parser::parse_expr(size_t min_prec) {
   return lhs;
 }
 
-ErrorOr<Expr *> Parser::parse_primary_expr() {
+ErrorOr<Expr *> Parser::parse_postfix_expr(bool allow_struct_lit) {
+  Expr *expr = try$(parse_primary_expr(allow_struct_lit));
+
+  while (peek().type == TOK_DOT) {
+    Token dot = consume();
+    Token field = try$(expect(TOK_ID, "Expected field name after `.`"));
+    auto *field_data =
+        _arena.create<expr::Field>(expr::Field{.base = expr, .field = field});
+    expr = _arena.create<Expr>(Expr{
+        .type = EXPR_FIELD,
+        .start = expr->start,
+        .end = field.end,
+        .data = field_data,
+    });
+  }
+
+  return expr;
+}
+
+ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
   if (peek().type == TOK_OPAREN) {
     Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
-    Expr *expr = try$(parse_expr());
+    Expr *expr = try$(parse_expr(0, allow_struct_lit));
     Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
     return _arena.create<Expr>(Expr{
         .type = EXPR_GROUP,
@@ -421,7 +462,7 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
     });
   } else if (peek().type == TOK_BANG) {
     Token bang = consume();
-    Expr *expr = try$(parse_primary_expr());
+    Expr *expr = try$(parse_primary_expr(allow_struct_lit));
     return _arena.create<Expr>(Expr{
         .type = EXPR_NOT,
         .start = bang.start,
@@ -434,7 +475,7 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
     Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
     std::vector<Expr *> args{};
     while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
-      args.push_back(try$(parse_expr()));
+      args.push_back(try$(parse_expr(0, allow_struct_lit)));
       if (peek().type == TOK_COMMA)
         try$(expect(TOK_COMMA, "Expected `,` after argument"));
       else
@@ -478,7 +519,7 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
         Token oparen = try$(expect(TOK_OPAREN, "Expected ( after identifier"));
         std::vector<Expr *> args{};
         while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
-          args.push_back(try$(parse_expr()));
+          args.push_back(try$(parse_expr(0, allow_struct_lit)));
           if (peek().type == TOK_COMMA)
             try$(expect(TOK_COMMA, "Expected , after argument"));
           else
@@ -492,6 +533,31 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
             .end = cparen.end,
             .data = _arena.create<expr::Call>(
                 expr::Call{.module = module, .name = name, .arguments = args}),
+        });
+      }
+
+      if (peek().type == TOK_OBRACE && allow_struct_lit) {
+        Token obrace = try$(expect(TOK_OBRACE, "Expected `{`"));
+        std::vector<expr::StructLitField> fields{};
+        while (_pos < _tokens.size() && peek().type != TOK_CBRACE) {
+          Token field_name =
+              try$(expect(TOK_ID, "Expected field name in struct literal"));
+          try$(expect(TOK_EQ, "Expected `=` after field name"));
+          Expr *value = try$(parse_expr(0, allow_struct_lit));
+          fields.push_back(expr::StructLitField{field_name, value});
+          if (peek().type == TOK_COMMA)
+            consume();
+          else
+            break;
+        }
+        Token cbrace = try$(expect(TOK_CBRACE, "Expected `}`"));
+
+        return _arena.create<Expr>(Expr{
+            .type = EXPR_STRUCT_LIT,
+            .start = var.start,
+            .end = cbrace.end,
+            .data = _arena.create<expr::StructLit>(
+                expr::StructLit{.type_name = name, .fields = fields}),
         });
       }
 
@@ -511,9 +577,17 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
         .end = int_.end,
         .data = _arena.create<expr::Int>(expr::Int{.value = int_.int_value}),
     });
+  } else if (peek().type == TOK_STRING) {
+    Token str = consume();
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_STRING,
+        .start = str.start,
+        .end = str.end,
+        .data = _arena.create<expr::String>(expr::String{.value = str}),
+    });
   } else if (peek().type == TOK_AMPERSAND) {
     Token ampersand = consume();
-    Expr *expr = try$(parse_expr());
+    Expr *expr = try$(parse_expr(0, allow_struct_lit));
     return _arena.create<Expr>(Expr{
         .type = EXPR_REF,
         .start = ampersand.start,
@@ -522,7 +596,7 @@ ErrorOr<Expr *> Parser::parse_primary_expr() {
     });
   } else if (peek().type == TOK_STAR) {
     Token star = consume();
-    Expr *expr = try$(parse_expr());
+    Expr *expr = try$(parse_expr(0, allow_struct_lit));
     return _arena.create<Expr>(Expr{
         .type = EXPR_DEREF,
         .start = star.start,
@@ -558,9 +632,22 @@ ErrorOr<Type *> Parser::parse_type() {
           .start = void_.start,
           .end = void_.end,
       });
+    } else if (peek().id_value == "byte") {
+      Token byte_ = consume();
+      return _arena.create<Type>(Type{
+          .type = TYPE_BYTE,
+          .start = byte_.start,
+          .end = byte_.end,
+      });
     } else {
-      return std::unexpected(Error("User defined types are not supported yet",
-                                   peek().start, peek().end));
+      Token name = consume();
+      return _arena.create<Type>(Type{
+          .type = TYPE_STRUCT,
+          .start = name.start,
+          .end = name.end,
+          .data = _arena.create<type::Struct>(
+              type::Struct{.name = name.id_value}),
+      });
     }
   } else if (peek().type == TOK_STAR) {
     Token star = consume();

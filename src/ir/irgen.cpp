@@ -51,6 +51,8 @@ void Generator::gen_decl(Decl *decl) {
 
   case DECL_IMPORT: break;
 
+  case DECL_STRUCT: break;
+
   case DECL_WHEN:
   case DECL_COMPTIME_BLOCK:
     PANIC("unreachable");
@@ -67,8 +69,15 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
 
   case STMT_VAR: {
     auto var = std::get<stmt::Var *>(stmt->data);
-    Operand src = gen_expr(var->value, fn);
-    fn->assign(Operand::Variable(std::string(var->name.id_value)), src);
+    std::string name(var->name.id_value);
+    if (var->type->type == TYPE_STRUCT) {
+      fn->variable_sizes[name] = struct_size(var->type);
+      init_struct_var(fn, name, var->type, var->value);
+    } else {
+      fn->variable_sizes[name] = 8;
+      Operand src = gen_expr(var->value, fn);
+      fn->assign(Operand::Variable(name), src);
+    }
   } break;
 
   case STMT_ASSIGN: {
@@ -299,6 +308,130 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     fn->call(dst, name, args);
     return dst;
   }
+
+  case EXPR_FIELD: {
+    auto field = std::get<expr::Field *>(expr->data);
+    if (field->base->type != EXPR_VAR)
+      PANIC("field access only supported on variables");
+
+    Type *base_type = field->base->expr_type;
+    std::string_view struct_name =
+        std::get<type::Struct *>(base_type->data)->name;
+    auto strukt = find_struct(struct_name);
+    if (!strukt.has_value())
+      PANIC("struct not found during codegen");
+
+    size_t offset = 0;
+    for (const auto &struct_field: strukt->fields) {
+      if (struct_field.name == field->field.id_value) {
+        offset = struct_field.offset;
+        break;
+      }
+    }
+
+    Operand base = Operand::Variable(std::string(
+        std::get<expr::Var *>(field->base->data)->var.id_value));
+    Operand dst = _builder.new_temp();
+    fn->load_offset(dst, base, static_cast<int64_t>(offset));
+    return dst;
+  }
+
+  case EXPR_STRUCT_LIT: {
+    std::string temp = std::format("__struct_tmp_{}", _struct_tmp_counter++);
+    Type *type = expr->expr_type;
+    fn->variable_sizes[temp] = struct_size(type);
+    init_struct_var(fn, temp, type, expr);
+    return Operand::Variable(temp);
+  }
+
+  case EXPR_STRING: {
+    std::string temp = std::format("__string_tmp_{}", _struct_tmp_counter++);
+    Type *type = expr->expr_type;
+    fn->variable_sizes[temp] = struct_size(type);
+    init_struct_var(fn, temp, type, expr);
+    return Operand::Variable(temp);
+  }
   }
   PANIC("unhandled expr type");
+}
+
+std::optional<CheckedStruct> Generator::find_struct(std::string_view name) {
+  for (Decl *decl: _decls) {
+    if (decl->type != DECL_STRUCT)
+      continue;
+    auto *strukt = std::get<decl::Struct *>(decl->data);
+    if (strukt->name.id_value == name) {
+      size_t offset = 0;
+      std::vector<CheckedStructField> fields{};
+      for (const decl::StructField &field: strukt->fields) {
+        fields.push_back(
+            CheckedStructField{field.name.id_value, field.type, offset});
+        offset += 8;
+      }
+      return CheckedStruct{name, fields, offset};
+    }
+  }
+
+  if (_registry != nullptr) {
+    for (const auto &[module_name, module]: _registry->modules()) {
+      auto strukt = _registry->find_struct(module_name, name);
+      if (strukt.has_value())
+        return strukt;
+    }
+  }
+
+  return std::nullopt;
+}
+
+size_t Generator::struct_size(Type *type) {
+  if (type->type != TYPE_STRUCT)
+    return 8;
+  std::string_view name = std::get<type::Struct *>(type->data)->name;
+  auto strukt = find_struct(name);
+  if (!strukt.has_value())
+    return 8;
+  return strukt->size;
+}
+
+void Generator::store_struct_fields(Function *fn, Operand base, Expr *value) {
+  if (value->type == EXPR_STRUCT_LIT) {
+    auto *lit = std::get<expr::StructLit *>(value->data);
+    auto strukt = find_struct(lit->type_name.id_value);
+    if (!strukt.has_value())
+      PANIC("struct not found during codegen");
+
+    for (const expr::StructLitField &field: lit->fields) {
+      size_t offset = 0;
+      for (const auto &struct_field: strukt->fields) {
+        if (struct_field.name == field.name.id_value) {
+          offset = struct_field.offset;
+          break;
+        }
+      }
+      Operand val = gen_expr(field.value, fn);
+      fn->store_offset(base, static_cast<int64_t>(offset), val);
+    }
+    return;
+  }
+
+  if (value->type == EXPR_STRING) {
+    auto *str = std::get<expr::String *>(value->data);
+    std::string decoded = unescape_string(str->value.string_value);
+    std::string label = _builder.create_rodata(decoded + '\0');
+
+    Operand ptr = _builder.new_temp();
+    fn->load_label(ptr, Operand::Label(label));
+    fn->store_offset(base, 0, ptr);
+    fn->store_offset(base, 8, Operand::ConstantInt(
+                                    static_cast<int64_t>(decoded.size())));
+    return;
+  }
+
+  PANIC("expected struct literal or string for struct initialization");
+}
+
+void Generator::init_struct_var(Function *fn, const std::string &name,
+                                Type *type, Expr *value) {
+  Operand base = Operand::Variable(name);
+  store_struct_fields(fn, base, value);
 }
