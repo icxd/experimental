@@ -1,5 +1,6 @@
 #include <memory>
 
+#include <arena.hpp>
 #include <checker/checker.hpp>
 #include <codegen/codegen.hpp>
 #include <common.hpp>
@@ -67,7 +68,8 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    Parser parser(tokens.value());
+    Arena arena;
+    Parser parser(tokens.value(), arena);
     auto decls = parser.parse_decls();
     if (!decls.has_value()) {
       Error error = decls.error();

@@ -106,6 +106,7 @@ enum Opcode {
   OP_LABEL,
   OP_JMP,
   OP_JMP_IF_ZERO,
+  OP_JMP_IF_NONZERO,
   OP_CALL, // a = b(...)
   OP_RET, // ret a
 };
@@ -155,6 +156,9 @@ struct Instruction {
     case OP_JMP:        return ANSI_RED "jmp " ANSI_RESET + srcs[0].to_string();
     case OP_JMP_IF_ZERO:
       return ANSI_RED "jz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
+             ANSI_RESET + srcs[1].to_string();
+    case OP_JMP_IF_NONZERO:
+      return ANSI_RED "jnz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
              ANSI_RESET + srcs[1].to_string();
     case OP_CALL: {
       std::string out = dst->to_string() + ANSI_RED " = " ANSI_RESET +
@@ -245,6 +249,9 @@ public:
   void jmp(Operand lbl) { append(Instruction(OP_JMP, std::nullopt, {lbl})); }
   void jmp_if_zero(Operand cond, Operand lbl) {
     append(Instruction(OP_JMP_IF_ZERO, std::nullopt, {cond, lbl}));
+  }
+  void jmp_if_nonzero(Operand cond, Operand lbl) {
+    append(Instruction(OP_JMP_IF_NONZERO, std::nullopt, {cond, lbl}));
   }
   void call(Operand dst, Operand name, std::vector<Operand> args = {}) {
     std::vector<Operand> srcs{};

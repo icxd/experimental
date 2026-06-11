@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include <common.hpp>
 
 enum TokenType {
@@ -16,6 +18,8 @@ enum TokenType {
   TOK_RETURN,
   TOK_VAR,
   TOK_WHEN,
+  TOK_BREAK,
+  TOK_CONTINUE,
 
   TOK_OPAREN,
   TOK_CPAREN,
@@ -37,6 +41,8 @@ enum TokenType {
   TOK_GT,
   TOK_GTE,
   TOK_AMPERSAND,
+  TOK_AMPAMP,
+  TOK_PIPEPIPE,
 
   TOK_EOF,
 };
@@ -61,6 +67,8 @@ struct Token {
     case TOK_RETURN:    return std::format("TOK_RETURN");
     case TOK_VAR:       return std::format("TOK_VAR");
     case TOK_WHEN:      return std::format("TOK_WHEN");
+    case TOK_BREAK:     return std::format("TOK_BREAK");
+    case TOK_CONTINUE:  return std::format("TOK_CONTINUE");
     case TOK_OPAREN:    return std::format("TOK_OPAREN");
     case TOK_CPAREN:    return std::format("TOK_CPAREN");
     case TOK_OBRACE:    return std::format("TOK_OBRACE");
@@ -83,7 +91,10 @@ struct Token {
     case TOK_GT:        return std::format("TOK_GT");
     case TOK_GTE:       return std::format("TOK_GTE");
     case TOK_AMPERSAND: return std::format("TOK_AMPERSAND");
+    case TOK_AMPAMP:    return std::format("TOK_AMPAMP");
+    case TOK_PIPEPIPE:  return std::format("TOK_PIPEPIPE");
     case TOK_EOF:       return std::format("TOK_EOF");
     }
+    std::unreachable();
   }
 };

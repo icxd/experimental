@@ -14,6 +14,11 @@ public:
   Builder builder() const { return _builder; }
 
 private:
+  struct LoopLabels {
+    std::string break_label;
+    std::string continue_label;
+  };
+
   void gen_decl(Decl *decl);
   void gen_stmt(Stmt *stmt, Function *fn);
   Operand gen_expr(Expr *expr, Function *fn);
@@ -21,4 +26,5 @@ private:
 private:
   std::vector<Decl *> _decls;
   Builder _builder{};
+  std::vector<LoopLabels> _loop_stack;
 };

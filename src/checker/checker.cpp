@@ -140,6 +140,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     return {};
   }
   }
+  std::unreachable();
 }
 
 ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
@@ -188,8 +189,10 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     }
     while_->cond->expr_type =
         new Type{TYPE_BOOL, while_->cond->start, while_->cond->end};
+    _loop_depth++;
     for (Stmt *inner: while_->body)
       try$(check_stmt(inner, scope));
+    _loop_depth--;
     return {};
   }
 
@@ -216,8 +219,10 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     }
     for_->cond->expr_type =
         new Type{TYPE_BOOL, for_->cond->start, for_->cond->end};
+    _loop_depth++;
     for (Stmt *inner: for_->body)
       try$(check_stmt(inner, scope));
+    _loop_depth--;
     try$(check_stmt(for_->step, scope));
     return {};
   }
@@ -305,7 +310,24 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
 
     return {};
   }
+
+  case STMT_BREAK: {
+    if (_loop_depth == 0) {
+      return std::unexpected(
+          Error("`break` outside of loop", stmt->start, stmt->end));
+    }
+    return {};
   }
+
+  case STMT_CONTINUE: {
+    if (_loop_depth == 0) {
+      return std::unexpected(
+          Error("`continue` outside of loop", stmt->start, stmt->end));
+    }
+    return {};
+  }
+  }
+  std::unreachable();
 }
 
 ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
@@ -369,7 +391,36 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
     case expr::Binary::BINOP_LTE:
     case expr::Binary::BINOP_GT:
     case expr::Binary::BINOP_GTE:   return new Type{TYPE_BOOL};
+
+    case expr::Binary::BINOP_AND:
+    case expr::Binary::BINOP_OR: {
+      if (!type_eq(lhs_type, new Type{TYPE_BOOL}) ||
+          !type_eq(rhs_type, new Type{TYPE_BOOL})) {
+        return std::unexpected(
+            Error("Logical operators require boolean operands", expr->start,
+                  expr->end)
+                .with_hint(std::format(
+                    "Expected `bool`, found `{}` and `{}`",
+                    lhs_type->to_string(), rhs_type->to_string())));
+      }
+      return new Type{TYPE_BOOL};
     }
+    }
+    std::unreachable();
+  }
+
+  case EXPR_NOT: {
+    expr::Not *not_ = std::get<expr::Not *>(expr->data);
+    Type *inner = try$(check_expr(not_->expr, scope));
+    not_->expr->expr_type = inner;
+    if (!type_eq(inner, new Type{TYPE_BOOL})) {
+      return std::unexpected(
+          Error("Logical negation requires a boolean operand", expr->start,
+                expr->end)
+              .with_hint(
+                  std::format("Expected `bool`, found `{}`", inner->to_string())));
+    }
+    return new Type{TYPE_BOOL};
   }
 
   case EXPR_REF: {
@@ -449,6 +500,7 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
     return ret_type;
   }
   }
+  std::unreachable();
 }
 
 ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
@@ -467,6 +519,7 @@ ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
     };
   }
   }
+  std::unreachable();
 }
 
 ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope) {
@@ -605,6 +658,7 @@ bool Checker::type_eq(Type *a, Type *b) {
     return type_eq(a_inner, b_inner);
   }
   }
+  std::unreachable();
 }
 
 std::optional<CheckedProc> Checker::find_proc(std::string_view name) {

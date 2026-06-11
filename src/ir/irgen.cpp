@@ -61,6 +61,7 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
     auto while_ = std::get<stmt::While *>(stmt->data);
     std::string loop = _builder.new_label();
     std::string end = _builder.new_label();
+    _loop_stack.push_back(LoopLabels{.break_label = end, .continue_label = loop});
     fn->label(Operand::Label(loop));
     Operand cond = gen_expr(while_->cond, fn);
     fn->jmp_if_zero(cond, Operand::Label(end));
@@ -68,18 +69,23 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
       gen_stmt(inner, fn);
     fn->jmp(Operand::Label(loop));
     fn->label(Operand::Label(end));
+    _loop_stack.pop_back();
   } break;
 
   case STMT_FOR: {
     auto for_ = std::get<stmt::For *>(stmt->data);
     std::string loop = _builder.new_label();
+    std::string step = _builder.new_label();
     std::string end = _builder.new_label();
     gen_stmt(for_->init, fn);
     fn->label(Operand::Label(loop));
     Operand cond = gen_expr(for_->cond, fn);
     fn->jmp_if_zero(cond, Operand::Label(end));
+    _loop_stack.push_back(LoopLabels{.break_label = end, .continue_label = step});
     for (Stmt *inner: for_->body)
       gen_stmt(inner, fn);
+    _loop_stack.pop_back();
+    fn->label(Operand::Label(step));
     gen_stmt(for_->step, fn);
     fn->jmp(Operand::Label(loop));
     fn->label(Operand::Label(end));
@@ -117,6 +123,14 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
       fn->ret();
     }
   } break;
+
+  case STMT_BREAK: {
+    fn->jmp(Operand::Label(_loop_stack.back().break_label));
+  } break;
+
+  case STMT_CONTINUE: {
+    fn->jmp(Operand::Label(_loop_stack.back().continue_label));
+  } break;
   }
 }
 
@@ -149,6 +163,37 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_BINARY: {
     auto binary = std::get<expr::Binary *>(expr->data);
+
+    if (binary->op == expr::Binary::BINOP_AND) {
+      Operand lhs = gen_expr(binary->lhs, fn);
+      std::string false_label = _builder.new_label();
+      std::string end_label = _builder.new_label();
+      Operand dst = _builder.new_temp();
+      fn->jmp_if_zero(lhs, Operand::Label(false_label));
+      Operand rhs = gen_expr(binary->rhs, fn);
+      fn->assign(dst, rhs);
+      fn->jmp(Operand::Label(end_label));
+      fn->label(Operand::Label(false_label));
+      fn->assign(dst, Operand::ConstantInt(0));
+      fn->label(Operand::Label(end_label));
+      return dst;
+    }
+
+    if (binary->op == expr::Binary::BINOP_OR) {
+      Operand lhs = gen_expr(binary->lhs, fn);
+      std::string true_label = _builder.new_label();
+      std::string end_label = _builder.new_label();
+      Operand dst = _builder.new_temp();
+      fn->jmp_if_nonzero(lhs, Operand::Label(true_label));
+      Operand rhs = gen_expr(binary->rhs, fn);
+      fn->assign(dst, rhs);
+      fn->jmp(Operand::Label(end_label));
+      fn->label(Operand::Label(true_label));
+      fn->assign(dst, Operand::ConstantInt(1));
+      fn->label(Operand::Label(end_label));
+      return dst;
+    }
+
     Operand dst = _builder.new_temp();
     Operand lhs = gen_expr(binary->lhs, fn);
     Operand rhs = gen_expr(binary->rhs, fn);
@@ -164,8 +209,18 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     case expr::Binary::BINOP_LTE:   fn->cmp_lte(dst, lhs, rhs); break;
     case expr::Binary::BINOP_GT:    fn->cmp_gt(dst, lhs, rhs); break;
     case expr::Binary::BINOP_GTE:   fn->cmp_gte(dst, lhs, rhs); break;
+    case expr::Binary::BINOP_AND:
+    case expr::Binary::BINOP_OR:    break;
     }
 
+    return dst;
+  }
+
+  case EXPR_NOT: {
+    auto not_ = std::get<expr::Not *>(expr->data);
+    Operand src = gen_expr(not_->expr, fn);
+    Operand dst = _builder.new_temp();
+    fn->cmp_eq(dst, src, Operand::ConstantInt(0));
     return dst;
   }
 
@@ -196,5 +251,5 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     return dst;
   }
   }
-  std::unreachable();
+  PANIC("unhandled expr type");
 }

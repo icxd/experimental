@@ -70,6 +70,7 @@ private:
   std::vector<CheckedProc> _procs = {};
   size_t _current_proc_id = std::numeric_limits<size_t>::max();
   std::vector<CheckedConst> _consts = {};
+  size_t _loop_depth = 0;
 };
 
 static inline std::optional<std::pair<std::string, std::string>>

@@ -42,6 +42,5 @@ private:
   std::map<std::string, size_t> _spill_loc{};
   size_t _next_stack_loc = 16;
   std::map<std::string, std::map<std::string, TempAllocation>> _register_maps;
-  std::vector<std::string> _registers{"x0", "x1", "x2", "x3",
-                                      "x4", "x5", "x6", "x7"};
+  std::vector<std::string> _registers{"x19", "x20", "x21", "x22"};
 };

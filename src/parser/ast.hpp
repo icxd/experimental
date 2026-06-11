@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include <common.hpp>
 #include <lexer/token.hpp>
 
@@ -87,6 +89,10 @@ namespace stmt {
     std::vector<Stmt *> body;
   };
 
+  struct Break {};
+
+  struct Continue {};
+
 } // namespace stmt
 
 enum StmtType {
@@ -97,12 +103,15 @@ enum StmtType {
   STMT_ASSIGN,
   STMT_WHILE,
   STMT_FOR,
+  STMT_BREAK,
+  STMT_CONTINUE,
 };
 struct Stmt {
   StmtType type;
   size_t start, end;
   std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *,
-               stmt::Assign *, stmt::While *, stmt::For *>
+               stmt::Assign *, stmt::While *, stmt::For *, stmt::Break *,
+               stmt::Continue *>
       data;
 };
 
@@ -137,8 +146,14 @@ namespace expr {
       BINOP_LTE,
       BINOP_GT,
       BINOP_GTE,
+      BINOP_AND,
+      BINOP_OR,
     } op;
     Expr *rhs;
+  };
+
+  struct Not {
+    Expr *expr;
   };
 
   struct Ref {
@@ -168,7 +183,10 @@ static std::string binop_to_string(expr::Binary::BinOp op) {
   case expr::Binary::BINOP_LTE:   return "<=";
   case expr::Binary::BINOP_GT:    return ">";
   case expr::Binary::BINOP_GTE:   return ">=";
+  case expr::Binary::BINOP_AND:   return "&&";
+  case expr::Binary::BINOP_OR:    return "||";
   }
+  std::unreachable();
 }
 
 enum ExprType {
@@ -180,12 +198,14 @@ enum ExprType {
   EXPR_REF,
   EXPR_DEREF,
   EXPR_CALL,
+  EXPR_NOT,
 };
 struct Expr {
   ExprType type;
   size_t start, end;
   std::variant<expr::Int *, expr::Bool *, expr::Var *, expr::Group *,
-               expr::Binary *, expr::Ref *, expr::Deref *, expr::Call *>
+               expr::Binary *, expr::Ref *, expr::Deref *, expr::Call *,
+               expr::Not *>
       data;
   Type *expr_type = nullptr;
 
@@ -239,7 +259,13 @@ public:
       out += ")";
       return out;
     }
+
+    case EXPR_NOT: {
+      auto x = std::get<expr::Not *>(data);
+      return std::format("!{}", x->expr->to_string());
     }
+    }
+    std::unreachable();
   }
 
   bool is_lvalue() const {
@@ -252,8 +278,10 @@ public:
     case EXPR_GROUP:
     case EXPR_BINARY:
     case EXPR_REF:
-    case EXPR_CALL:   return false;
+    case EXPR_CALL:
+    case EXPR_NOT:    return false;
     }
+    std::unreachable();
   }
 };
 
@@ -282,6 +310,7 @@ public:
       return std::format("*{}", inner->to_string());
     }
     }
+    std::unreachable();
   }
 
   bool is_pointer_to(Type *actual) {

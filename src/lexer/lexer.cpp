@@ -52,6 +52,10 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_RETURN;
     else if (id == "when")
       type = TOK_WHEN;
+    else if (id == "break")
+      type = TOK_BREAK;
+    else if (id == "continue")
+      type = TOK_CONTINUE;
 
     return Token{
         .type = type,
@@ -90,7 +94,12 @@ ErrorOr<Token> Lexer::next_token() {
   case '!': return double_char_token('=', TOK_NEQ, TOK_BANG);
   case '<': return double_char_token('=', TOK_LTE, TOK_LT);
   case '>': return double_char_token('=', TOK_GTE, TOK_GT);
-  case '&': return single_char_token(TOK_AMPERSAND);
+  case '&': return double_char_token('&', TOK_AMPAMP, TOK_AMPERSAND);
+  case '|':
+    if (_pos + 1 < _source.size() && peek(1) == '|')
+      return double_char_token('|', TOK_PIPEPIPE, TOK_PIPEPIPE);
+    return std::unexpected(
+        Error(std::format("Illegal character `{}`", peek()), _pos, _pos + 1));
   default:  break;
   }
 

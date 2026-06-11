@@ -268,6 +268,15 @@ void Aarch64LinuxGasEmitter::emit_instruction(Instruction instr) {
     _output += "  cbz x9, " + emit_operand(instr.srcs[1]) + "\n";
   } break;
 
+  case OP_JMP_IF_NONZERO: {
+    Operand cond = instr.srcs[0];
+    if (cond.type == OPERAND_VARIABLE || cond.type == OPERAND_TEMPORARY)
+      _output += "  ldr x9, " + emit_value(cond) + "\n";
+    else
+      _output += "  mov x9, " + emit_value(cond) + "\n";
+    _output += "  cbnz x9, " + emit_operand(instr.srcs[1]) + "\n";
+  } break;
+
   case OP_CALL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
