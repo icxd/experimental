@@ -11,6 +11,12 @@ constexpr int HOST_OS = 1;
 constexpr int HOST_OS = 0;
 #endif
 
+#if defined(__aarch64__) || defined(__arm64__)
+constexpr int HOST_ARCH = 1;
+#else
+constexpr int HOST_ARCH = 0;
+#endif
+
 inline Target get_host_target() {
 #if defined(__aarch64__) || defined(__arm64__)
 #  if defined(__linux__)

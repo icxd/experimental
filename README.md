@@ -72,7 +72,7 @@ for init_stmt; condition; step_stmt {
 Supported today:
 
 - Types: `void`, `bool`, `int`, pointers (`*int`, `**int`, …)
-- Declarations: `proc`, `const`, `extern proc`, compile-time `when`
+- Declarations: `proc`, `const`, `extern proc`, compile-time `when` (top-level and in procedure bodies)
 - Statements: `var`, `name = expr` assignment, `return`, `if` / `else`, `while`, `for`, `break`, `continue`, blocks `{ ... }`
 - Expressions: arithmetic, comparisons, logical operators (`&&`, `||`, `!`), pointers (`&`, `*`), calls
 
@@ -154,6 +154,57 @@ Pass one or more entry `.rye` files on the command line. Imported modules are di
 ```
 
 `runtime/ryert.rye` is always included automatically.
+
+### Compile-time `when`
+
+`when` evaluates its condition at compile time and keeps only the taken branch. Use it for platform-specific declarations and statements:
+
+```rye
+when TARGET_OS == OS_LINUX {
+  const PAGE_SIZE int = 4096;
+  proc platform_name() int { return 1; }
+} else {
+  const PAGE_SIZE int = 16384;
+  proc platform_name() int { return 2; }
+}
+
+proc main() int {
+  when DEBUG {
+    return platform_name() + PAGE_SIZE;
+  }
+  return 0;
+}
+```
+
+Built-in compile-time constants:
+
+| Name | Type | Value |
+|------|------|-------|
+| `OS_LINUX` | `int` | `0` |
+| `OS_MACOS` | `int` | `1` |
+| `TARGET_OS` | `int` | selected OS (see `-target`) |
+| `ARCH_X86_64` | `int` | `0` |
+| `ARCH_AARCH64` | `int` | `1` |
+| `TARGET_ARCH` | `int` | selected architecture (see `-target`) |
+
+Conditions may use constant arithmetic, comparisons, and logical operators (`&&`, `||`, `!`). User `const` values and `-D` defines are visible when they appear earlier in the same module.
+
+Compile-time flags:
+
+```bash
+./build/rye app.rye -D DEBUG=true -D VERSION=3 -O app
+```
+
+Cross-compilation target (overrides `TARGET_OS` / `TARGET_ARCH` for `when`, and selects the codegen backend):
+
+```bash
+./build/rye app.rye --target linux-x86_64 -O app
+./build/rye app.rye --target macos-aarch64 -O app
+```
+
+Supported targets: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64`.
+
+Use `--check-only` to type-check and resolve `when` branches without emitting or linking (useful when the selected `-target` does not match the host linker).
 
 ### Freestanding / nostdlib
 

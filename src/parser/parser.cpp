@@ -204,6 +204,27 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
             .body = body,
         }),
     });
+  } else if (peek().type == TOK_WHEN) {
+    Token when = try$(expect(TOK_WHEN, "Expected `when`"));
+    Expr *cond = try$(parse_expr());
+
+    std::vector<Stmt *> when_block = try$(parse_block());
+    std::vector<Stmt *> else_block{};
+    if (peek().type == TOK_ELSE) {
+      try$(expect(TOK_ELSE, "Expected `else`"));
+      else_block = try$(parse_block());
+    }
+
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_WHEN,
+        .start = when.start,
+        .end = previous().end,
+        .data = _arena.create<stmt::When>(stmt::When{
+            .cond = cond,
+            .true_block = when_block,
+            .false_block = else_block,
+        }),
+    });
   } else if (peek().type == TOK_IF) {
     Token if_ = try$(expect(TOK_IF, "Expected `if`"));
     Expr *cond = try$(parse_expr());
@@ -292,9 +313,9 @@ size_t get_operator_precedence(Token tok) {
   case TOK_GT:
   case TOK_GTE:   return 10;
 
-  case TOK_AMPAMP: return 6;
+  case TOK_AMPAMP: return 11;
 
-  case TOK_PIPEPIPE: return 5;
+  case TOK_PIPEPIPE: return 12;
 
   default:           return 0;
   }

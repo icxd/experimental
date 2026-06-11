@@ -162,6 +162,24 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
                    indent.next(i == if_->else_block.size() - 1));
     }
   } break;
+  case STMT_WHEN: {
+    auto when = std::get<stmt::When *>(stmt->data);
+    out << "\n";
+    print_expr(out, when->cond, indent.next(false));
+    for (size_t i = 0; i < when->true_block.size(); ++i)
+      print_stmt(out, when->true_block[i],
+                 indent.next(i == when->true_block.size() - 1));
+    if (!when->false_block.empty()) {
+      out << indent.prefix() << "else\n";
+      for (size_t i = 0; i < when->false_block.size(); ++i)
+        print_stmt(out, when->false_block[i],
+                   indent.next(i == when->false_block.size() - 1));
+    }
+  } break;
+  case STMT_BREAK:
+  case STMT_CONTINUE:
+    out << "\n";
+    break;
   }
 }
 

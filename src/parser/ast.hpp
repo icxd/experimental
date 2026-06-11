@@ -97,6 +97,12 @@ namespace stmt {
 
   struct Continue {};
 
+  struct When {
+    Expr *cond;
+    std::vector<Stmt *> true_block;
+    std::vector<Stmt *> false_block;
+  };
+
 } // namespace stmt
 
 enum StmtType {
@@ -109,13 +115,14 @@ enum StmtType {
   STMT_FOR,
   STMT_BREAK,
   STMT_CONTINUE,
+  STMT_WHEN,
 };
 struct Stmt {
   StmtType type;
   size_t start, end;
   std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *,
                stmt::Assign *, stmt::While *, stmt::For *, stmt::Break *,
-               stmt::Continue *>
+               stmt::Continue *, stmt::When *>
       data;
 };
 

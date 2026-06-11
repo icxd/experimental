@@ -147,6 +147,9 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
   case STMT_CONTINUE: {
     fn->jmp(Operand::Label(_loop_stack.back().continue_label));
   } break;
+
+  case STMT_WHEN:
+    PANIC("unreachable");
   }
 }
 

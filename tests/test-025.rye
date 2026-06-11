@@ -1,0 +1,23 @@
+/// 15
+
+when TARGET_OS == OS_LINUX {
+  when TARGET_ARCH == ARCH_X86_64 {
+    const BASE int = 10;
+  } else {
+    const BASE int = 1;
+  }
+} else {
+  const BASE int = 0;
+}
+
+const FLAG int = 1;
+
+when TARGET_OS == OS_LINUX && FLAG == 1 {
+  proc main() int {
+    return BASE + 5;
+  }
+} else {
+  proc main() int {
+    return 0;
+  }
+}
