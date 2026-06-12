@@ -384,7 +384,7 @@ Linkage Generator::find_proc_linkage(std::string_view module,
   if (_registry != nullptr) {
     auto proc = _registry->find_proc(module, name);
     if (proc.has_value())
-      return LINK_INTERN;
+      return proc->linkage;
   }
 
   return LINK_INTERN;

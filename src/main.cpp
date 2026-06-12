@@ -181,6 +181,44 @@ topo_sort_modules(const std::map<std::string, ParsedModule> &modules) {
   return order;
 }
 
+static std::vector<std::string>
+prioritize_builtin_modules(const std::vector<std::string> &order,
+                           const std::map<std::string, ParsedModule> &modules) {
+  std::set<std::string> early{};
+  std::queue<std::string> pending{};
+
+  for (const auto &[path, module]: modules) {
+    if (module.is_runtime || is_prelude_module(module.rel_path)) {
+      if (!early.contains(path)) {
+        early.insert(path);
+        pending.push(path);
+      }
+    }
+  }
+
+  while (!pending.empty()) {
+    const ParsedModule &module = modules.at(pending.front());
+    pending.pop();
+    for (const auto &import_path: module.import_abs_paths) {
+      if (!early.contains(import_path)) {
+        early.insert(import_path);
+        pending.push(import_path);
+      }
+    }
+  }
+
+  std::vector<std::string> prioritized{};
+  std::vector<std::string> rest{};
+  for (const auto &path: order) {
+    if (early.contains(path))
+      prioritized.push_back(path);
+    else
+      rest.push_back(path);
+  }
+  prioritized.insert(prioritized.end(), rest.begin(), rest.end());
+  return prioritized;
+}
+
 int main(int argc, char *argv[]) {
   char *program = eat_arg();
 
@@ -251,6 +289,7 @@ int main(int argc, char *argv[]) {
     print_error("", "", order.error());
     return EXIT_FAILURE;
   }
+  order = prioritize_builtin_modules(order.value(), modules);
 
   ModuleRegistry registry{};
   std::set<std::string> print_targets{};
