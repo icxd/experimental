@@ -78,6 +78,31 @@ Supported today:
 
 The compiler always links `std/string.rye`, which defines the standard `String` struct (`ptr *byte`, `len int`). String literals codegen to `String{ ptr = <rodata>, len = N }`.
 
+### Standard library
+
+The repository ships a small standard library under `std/`. The compiler adds the current working directory to the import search path by default, so `import "std/math.rye"` resolves when you run `rye` from the project root.
+
+| Module | Import | Provides |
+|--------|--------|----------|
+| `std/string.rye` | *(prelude — linked automatically)* | `String` struct, `is_empty`, `eq` |
+| `std/math.rye` | `import "std/math.rye"` | `min`, `max`, `abs`, `clamp` |
+| `std/io.rye` | `import "std/io.rye"` | `print_string`, `eprint_string` |
+
+Example:
+
+```rye
+import "std/math.rye";
+import "std/io.rye";
+
+proc main() int {
+  var msg String = "hello";
+  print_string(&msg);
+  return clamp(42, 0, 100);
+}
+```
+
+`String` APIs take a pointer (`*String`) because struct pass-by-value in calls is not fully supported yet — pass `&var` at call sites.
+
 `break` exits the nearest enclosing `while` or `for` loop. `continue` skips to the next iteration — the loop condition for `while`, or the step expression for `for`.
 
 Logical `&&` and `||` short-circuit: the right-hand side is evaluated only when needed. `!` negates a `bool` value.

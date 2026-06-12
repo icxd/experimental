@@ -1,0 +1,17 @@
+/// 42
+
+import "std/string.rye";
+
+proc main() int {
+  var a String = "foo";
+  var b String = "foo";
+  var c String = "bar";
+
+  if eq(&a, &b) {
+    if !eq(&a, &c) {
+      return 42;
+    }
+  }
+
+  return 0;
+}

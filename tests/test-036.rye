@@ -1,0 +1,10 @@
+/// 112
+
+import "std/math.rye";
+
+proc main() int {
+  var a int = clamp(150, 0, 100);
+  var b int = max(3, 7);
+  var c int = abs(0 - 5);
+  return a + b + c;
+}

@@ -37,7 +37,6 @@ void Generator::gen_decl(Decl *decl) {
     for (const auto &param: proc->params)
       params.push_back(param.name.id_value);
 
-    _builder.reset_labels();
   std::string_view fn_name = own_name(
         link_name(_module_name, proc->name.id_value, proc->linkage));
     Function *fn = _builder.create_function(fn_name, params);
@@ -299,8 +298,8 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
       module = call->module->id_value;
     else if (call->resolved_module.has_value())
       module = *call->resolved_module;
-    std::string callee =
-        link_name(module, call->name.id_value, LINK_INTERN);
+    Linkage linkage = find_proc_linkage(module, call->name.id_value);
+    std::string callee = link_name(module, call->name.id_value, linkage);
     Operand name = Operand::Function(callee);
     std::vector<Operand> args{};
     for (auto *arg: call->arguments)
@@ -311,9 +310,6 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_FIELD: {
     auto field = std::get<expr::Field *>(expr->data);
-    if (field->base->type != EXPR_VAR)
-      PANIC("field access only supported on variables");
-
     Type *base_type = field->base->expr_type;
     std::string_view struct_name =
         std::get<type::Struct *>(base_type->data)->name;
@@ -329,8 +325,26 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
       }
     }
 
-    Operand base = Operand::Variable(std::string(
-        std::get<expr::Var *>(field->base->data)->var.id_value));
+    Operand base;
+    Expr *base_expr = field->base;
+    if (base_expr->type == EXPR_GROUP)
+      base_expr = std::get<expr::Group *>(base_expr->data)->expr;
+
+    if (base_expr->type == EXPR_VAR) {
+      base = Operand::Variable(std::string(
+          std::get<expr::Var *>(base_expr->data)->var.id_value));
+    } else if (base_expr->type == EXPR_DEREF) {
+      auto deref = std::get<expr::Deref *>(base_expr->data);
+      Operand ptr = gen_expr(deref->expr, fn);
+      Operand ptr_val = _builder.new_temp();
+      fn->assign(ptr_val, ptr);
+      Operand dst = _builder.new_temp();
+      fn->load_offset(dst, ptr_val, static_cast<int64_t>(offset));
+      return dst;
+    } else {
+      PANIC("field access only supported on variables and pointers");
+    }
+
     Operand dst = _builder.new_temp();
     fn->load_offset(dst, base, static_cast<int64_t>(offset));
     return dst;
@@ -353,6 +367,27 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
   }
   }
   PANIC("unhandled expr type");
+}
+
+Linkage Generator::find_proc_linkage(std::string_view module,
+                                     std::string_view name) {
+  if (module == _module_name) {
+    for (Decl *decl: _decls) {
+      if (decl->type != DECL_PROC)
+        continue;
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      if (proc->name.id_value == name)
+        return proc->linkage;
+    }
+  }
+
+  if (_registry != nullptr) {
+    auto proc = _registry->find_proc(module, name);
+    if (proc.has_value())
+      return LINK_INTERN;
+  }
+
+  return LINK_INTERN;
 }
 
 std::optional<CheckedStruct> Generator::find_struct(std::string_view name) {
