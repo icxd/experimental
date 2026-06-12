@@ -185,6 +185,7 @@ int main(int argc, char *argv[]) {
   char *program = eat_arg();
 
   Opts opts;
+  opts.import_paths.push_back(fs::current_path().string());
   opts.files.push_back("runtime/ryert.rye");
   opts.files.push_back("std/string.rye");
 

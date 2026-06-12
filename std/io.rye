@@ -1,0 +1,20 @@
+import "std/string.rye";
+
+extern proc write(fd int, buf *byte, count int) int;
+
+const STDOUT int = 1;
+const STDERR int = 2;
+
+proc print_string(s *String) int {
+  if (*s).len == 0 {
+    return 0;
+  }
+  return write(STDOUT, (*s).ptr, (*s).len);
+}
+
+proc eprint_string(s *String) int {
+  if (*s).len == 0 {
+    return 0;
+  }
+  return write(STDERR, (*s).ptr, (*s).len);
+}

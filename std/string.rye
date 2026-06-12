@@ -2,3 +2,19 @@ struct String {
   ptr *byte;
   len int;
 }
+
+extern proc memcmp(s1 *byte, s2 *byte, n int) int;
+
+proc is_empty(s *String) bool {
+  return (*s).len == 0;
+}
+
+proc eq(a *String, b *String) bool {
+  if (*a).len != (*b).len {
+    return false;
+  }
+  if (*a).len == 0 {
+    return true;
+  }
+  return memcmp((*a).ptr, (*b).ptr, (*a).len) == 0;
+}

@@ -37,6 +37,7 @@ private:
   void store_struct_fields(Function *fn, Operand base, Expr *value);
   std::optional<CheckedStruct> find_struct(std::string_view name);
   size_t struct_size(Type *type);
+  Linkage find_proc_linkage(std::string_view module, std::string_view name);
   std::string link_name(std::string_view module, std::string_view symbol,
                         Linkage linkage) const;
   std::string_view own_name(std::string name);
