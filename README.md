@@ -85,6 +85,7 @@ The repository ships a small standard library under `std/`. The compiler adds th
 | Module | Import | Provides |
 |--------|--------|----------|
 | `std/string.rye` | *(prelude — linked automatically)* | `String` struct, `is_empty`, `eq` |
+| `std/mem.rye` | `import "std/mem.rye"` | `memcpy`, `memmove`, `memset`, `memcmp`, `malloc`, `calloc`, `realloc`, `free`, plus `copy`, `zero`, `compare` wrappers |
 | `std/math.rye` | `import "std/math.rye"` | `min`, `max`, `abs`, `clamp` |
 | `std/io.rye` | `import "std/io.rye"` | `print_string`, `eprint_string` |
 

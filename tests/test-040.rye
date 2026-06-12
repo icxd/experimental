@@ -1,0 +1,13 @@
+/// 42
+
+import "std/mem.rye";
+
+proc main() int {
+  var src String = "abc";
+  var dst *byte = malloc(3);
+  var copied *byte = copy(dst, src.ptr, 3);
+  if compare(copied, src.ptr, 3) == 0 {
+    return 42;
+  }
+  return 0;
+}

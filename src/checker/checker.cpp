@@ -291,6 +291,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
         params,
         ret_type,
         proc_scope,
+        proc->linkage,
     });
     _current_proc_id = _procs.size() - 1;
 

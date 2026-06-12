@@ -38,6 +38,7 @@ struct CheckedProc {
   std::vector<CheckedParam> params;
   Type *ret_type;
   Scope *scope;
+  Linkage linkage = LINK_INTERN;
 };
 
 struct CheckedConst {

@@ -1,0 +1,21 @@
+extern proc memcpy(dest *byte, src *byte, n int) *byte;
+extern proc memmove(dest *byte, src *byte, n int) *byte;
+extern proc memset(dest *byte, c int, n int) *byte;
+extern proc memcmp(s1 *byte, s2 *byte, n int) int;
+
+extern proc malloc(size int) *byte;
+extern proc calloc(nmemb int, size int) *byte;
+extern proc realloc(ptr *byte, size int) *byte;
+extern proc free(ptr *byte) void;
+
+proc zero(dest *byte, n int) *byte {
+  return memset(dest, 0, n);
+}
+
+proc copy(dest *byte, src *byte, n int) *byte {
+  return memcpy(dest, src, n);
+}
+
+proc compare(a *byte, b *byte, n int) int {
+  return memcmp(a, b, n);
+}

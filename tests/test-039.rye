@@ -1,0 +1,9 @@
+/// 65
+
+import "std/mem.rye";
+
+proc main() int {
+  var buf *byte = malloc(4);
+  var filled *byte = memset(buf, 65, 4);
+  return *filled;
+}

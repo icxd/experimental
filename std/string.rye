@@ -1,9 +1,9 @@
+import "std/mem.rye";
+
 struct String {
   ptr *byte;
   len int;
 }
-
-extern proc memcmp(s1 *byte, s2 *byte, n int) int;
 
 proc is_empty(s *String) bool {
   return (*s).len == 0;
