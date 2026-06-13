@@ -1,0 +1,6 @@
+/// 42
+
+proc main() int {
+  var pair (int, int) = (40, 2);
+  return pair[0] + pair[1];
+}

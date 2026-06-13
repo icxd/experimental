@@ -41,6 +41,31 @@ inline void print_type(std::ostream &out, Type *type) {
     out << "\033[36m" << std::get<type::Struct *>(type->data)->name
         << "\033[0m";
     break;
+  case TYPE_PROC: {
+    auto *proc = std::get<type::Proc *>(type->data);
+    out << "\033[36mproc(";
+    for (size_t i = 0; i < proc->params.size(); i++) {
+      if (i > 0)
+        out << ", ";
+      out << proc->params[i].name.id_value << " ";
+      print_type(out, proc->params[i].type);
+    }
+    out << ") ";
+    print_type(out, proc->ret_type);
+    out << "\033[0m";
+    break;
+  }
+  case TYPE_TUPLE: {
+    auto *tuple = std::get<type::Tuple *>(type->data);
+    out << "\033[36m(";
+    for (size_t i = 0; i < tuple->elements.size(); i++) {
+      if (i > 0)
+        out << ", ";
+      print_type(out, tuple->elements[i]);
+    }
+    out << ")\033[0m";
+    break;
+  }
   }
 }
 
@@ -97,7 +122,12 @@ inline void print_expr(std::ostream &out, Expr *expr, Indent indent = {}) {
 
   case EXPR_CALL: {
     auto call = std::get<expr::Call *>(expr->data);
-    out << "\033[32m" << call->name.id_value << "\033[0m\n";
+    if (call->callee != nullptr) {
+      out << "\n";
+      print_expr(out, call->callee, indent.next(false));
+    } else if (call->name.has_value()) {
+      out << "\033[32m" << call->name->id_value << "\033[0m\n";
+    }
 
     for (size_t i = 0; i < call->arguments.size(); ++i)
       print_expr(out, call->arguments[i],
@@ -142,6 +172,38 @@ inline void print_expr(std::ostream &out, Expr *expr, Indent indent = {}) {
     out << " \033[33m\"" << str->value.string_value << "\"\033[0m\n";
     break;
   }
+
+  case EXPR_SIZEOF:
+    out << " sizeof(...)\n";
+    break;
+
+  case EXPR_CAST: {
+    auto cast_ = std::get<expr::Cast *>(expr->data);
+    out << " cast\n";
+    print_expr(out, cast_->expr, indent.next(true));
+    break;
+  }
+
+  case EXPR_INDEX: {
+    auto index = std::get<expr::Index *>(expr->data);
+    out << " []\n";
+    print_expr(out, index->base, indent.next(false));
+    print_expr(out, index->index, indent.next(true));
+    break;
+  }
+
+  case EXPR_PROC_LIT:
+    out << " proc { ... }\n";
+    break;
+
+  case EXPR_TUPLE: {
+    auto *tuple = std::get<expr::TupleLit *>(expr->data);
+    out << " tuple\n";
+    for (size_t i = 0; i < tuple->elements.size(); i++) {
+      print_expr(out, tuple->elements[i], indent.next(i == tuple->elements.size() - 1));
+    }
+    break;
+  }
   }
 }
 
@@ -159,8 +221,10 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
     auto var = std::get<stmt::Var *>(stmt->data);
     out << " \033[34m" << var->name.id_value << "\033[0m ";
     print_type(out, var->type);
-    out << "\n";
-    print_expr(out, var->value, indent.next(true));
+    if (var->value.has_value()) {
+      out << "\n";
+      print_expr(out, var->value.value(), indent.next(true));
+    }
   } break;
   case STMT_RETURN: {
     auto ret = std::get<stmt::Return *>(stmt->data);
@@ -170,7 +234,8 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
   } break;
   case STMT_ASSIGN: {
     auto assign = std::get<stmt::Assign *>(stmt->data);
-    out << " \033[34m" << assign->name.id_value << "\033[0m\n";
+    out << "\n";
+    print_expr(out, assign->target, indent.next(false));
     print_expr(out, assign->value, indent.next(true));
   } break;
   case STMT_WHILE: {
@@ -223,6 +288,11 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
   case STMT_CONTINUE:
     out << "\n";
     break;
+  case STMT_EXPR: {
+    auto *expr_stmt = std::get<stmt::ExprStmt *>(stmt->data);
+    out << "\n";
+    print_expr(out, expr_stmt->expr, indent.next(true));
+  } break;
   }
 }
 

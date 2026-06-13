@@ -1,4 +1,5 @@
 /// 15
+/// target: linux-x86_64
 
 when TARGET_OS == OS_LINUX {
   when TARGET_ARCH == ARCH_X86_64 {

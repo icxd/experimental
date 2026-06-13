@@ -1,0 +1,56 @@
+/// 12
+
+import "std/alloc.rye";
+
+struct IntList {
+  data *int;
+  len, cap int;
+}
+
+proc init(l *IntList, capacity int) void {
+  l.data = cast(*int) alloc(capacity * 8);
+  l.len = 0;
+  l.cap = capacity;
+}
+
+proc destroy(l *IntList) void {
+  dealloc(cast(*byte) l.data);
+}
+
+proc push(l *IntList, x int) void {
+  if l.len >= l.cap {
+    l.cap = l.cap * 2;
+    l.data = cast(*int) resize(cast(*byte) l.data, l.cap * 8);
+  }
+  l.data[l.len] = x;
+  l.len = l.len + 1;
+}
+
+proc pop(l *IntList) int {
+  l.len = l.len - 1;
+  return l.data[l.len];
+}
+
+proc map(l *IntList, f proc(x int) int) void {
+  for var i int = 0; i < l.len; i = i + 1 {
+    l.data[i] = f(l.data[i]);
+  }
+}
+
+proc sum(l *IntList) int {
+  var total int = 0;
+  for var i int = 0; i < l.len; i = i + 1 {
+    total = total + l.data[i];
+  }
+  return total;
+}
+
+proc main() int {
+  var l IntList;
+  l.init(10);
+  l.push(1);
+  l.push(2);
+  l.push(3);
+  l.map(proc(x int) int { return x * 2; });
+  return l.sum();
+}

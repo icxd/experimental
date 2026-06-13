@@ -9,6 +9,23 @@ static const char *param_reg(size_t i) {
   return i < 6 ? regs[i] : "rdi";
 }
 
+static bool var_is_indirect(const Function *fn, std::string_view name) {
+  return fn != nullptr && fn->indirect_vars.contains(std::string(name));
+}
+
+static bool var_is_struct_value(const Function *fn, std::string_view name) {
+  return fn != nullptr && fn->struct_value_params.contains(std::string(name));
+}
+
+static void emit_struct_param_copy(std::string &output, const std::string &src_reg,
+                                   size_t dest_off, size_t size) {
+  output += "  mov rax, " + src_reg + "\n";
+  for (size_t off = 0; off < size; off += 8) {
+    output += "  mov rcx, [rax + " + std::to_string(off) + "]\n";
+    output += "  mov [rsp + " + std::to_string(dest_off + off) + "], rcx\n";
+  }
+}
+
 static size_t variable_stack_size(const Function &function,
                                   std::string_view name) {
   auto it = function.variable_sizes.find(std::string(name));
@@ -101,9 +118,9 @@ void X86_64LinuxGasEmitter::emit_function(Function function) {
     }
 
     for (size_t i = 0; i < function.parameters.size(); i++) {
-      std::string_view param = function.parameters[i];
-      _stack_loc.insert({std::string(param), _next_stack_loc});
-      _next_stack_loc += 16;
+      std::string param(function.parameters[i]);
+      _stack_loc.insert({param, _next_stack_loc});
+      _next_stack_loc += variable_stack_size(function, param);
     }
 
     for (const auto &[temp, alloc]: regmap) {
@@ -146,11 +163,17 @@ void X86_64LinuxGasEmitter::emit_function(Function function) {
     _var_sizes.clear();
 
     for (size_t i = 0; i < function.parameters.size(); i++) {
-      std::string_view param = function.parameters[i];
-      _stack_loc.insert({std::string(param), _next_stack_loc});
-      _output += "  mov [rsp + " + std::to_string(_next_stack_loc) + "], " +
-                 param_reg(i) + "\n";
-      _next_stack_loc += 16;
+      std::string param(function.parameters[i]);
+      size_t stack_off = _next_stack_loc;
+      _stack_loc.insert({param, stack_off});
+      if (var_is_struct_value(&function, param)) {
+        emit_struct_param_copy(_output, param_reg(i), stack_off,
+                               variable_stack_size(function, param));
+      } else {
+        _output += "  mov [rsp + " + std::to_string(stack_off) + "], " +
+                   param_reg(i) + "\n";
+      }
+      _next_stack_loc += variable_stack_size(function, param);
     }
 
     for (const auto &[temp, alloc]: regmap) {
@@ -257,12 +280,18 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand dst = *instr.dst;
     Operand base = instr.srcs[0];
     int64_t offset = instr.srcs[1].int_value;
-    if (base.type == OPERAND_VARIABLE) {
+    if (base.type == OPERAND_VARIABLE &&
+        !var_is_indirect(_current_function, base.name)) {
       size_t base_off = _stack_loc.at(base.name);
       _output += "  mov r10, [rsp + " + std::to_string(base_off + offset) +
                  "]\n";
     } else {
-      _output += "  mov r10, " + emit_value(base) + "\n";
+      if (base.type == OPERAND_VARIABLE) {
+        size_t base_off = _stack_loc.at(base.name);
+        _output += "  mov r10, [rsp + " + std::to_string(base_off) + "]\n";
+      } else {
+        _output += "  mov r10, " + emit_value(base) + "\n";
+      }
       if (offset != 0)
         _output += "  add r10, " + std::to_string(offset) + "\n";
       _output += "  mov r10, [r10]\n";
@@ -275,12 +304,18 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     int64_t offset = instr.srcs[1].int_value;
     Operand value = instr.srcs[2];
     _output += "  mov r11, " + emit_value(value) + "\n";
-    if (base.type == OPERAND_VARIABLE) {
+    if (base.type == OPERAND_VARIABLE &&
+        !var_is_indirect(_current_function, base.name)) {
       size_t base_off = _stack_loc.at(base.name);
       _output += "  mov [rsp + " + std::to_string(base_off + offset) +
                  "], r11\n";
     } else {
-      _output += "  mov r10, " + emit_value(base) + "\n";
+      if (base.type == OPERAND_VARIABLE) {
+        size_t base_off = _stack_loc.at(base.name);
+        _output += "  mov r10, [rsp + " + std::to_string(base_off) + "]\n";
+      } else {
+        _output += "  mov r10, " + emit_value(base) + "\n";
+      }
       if (offset != 0)
         _output += "  add r10, " + std::to_string(offset) + "\n";
       _output += "  mov [r10], r11\n";
@@ -403,6 +438,18 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     _output += "  jne " + emit_operand(instr.srcs[1]) + "\n";
   } break;
 
+  case OP_JMP_IF_EQ: {
+    _output += "  mov r10, " + emit_value(instr.srcs[0]) + "\n";
+    _output += "  cmp r10, " + emit_value(instr.srcs[1]) + "\n";
+    _output += "  je " + emit_operand(instr.srcs[2]) + "\n";
+  } break;
+
+  case OP_JMP_IF_NE: {
+    _output += "  mov r10, " + emit_value(instr.srcs[0]) + "\n";
+    _output += "  cmp r10, " + emit_value(instr.srcs[1]) + "\n";
+    _output += "  jne " + emit_operand(instr.srcs[2]) + "\n";
+  } break;
+
   case OP_CALL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
@@ -412,19 +459,45 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     for (size_t i = 1; i < instr.srcs.size(); i++) {
       Operand arg = instr.srcs[i];
       std::string reg = param_reg(i - 1);
-      if (arg.type == OPERAND_VARIABLE)
+      if (arg.type == OPERAND_STACK_ADDR)
+        _output += "  lea " + reg + ", [rsp + " + emit_operand(arg) + "]\n";
+      else if (arg.type == OPERAND_VARIABLE)
         _output += "  mov " + reg + ", [rsp + " + emit_operand(arg) + "]\n";
+      else if (arg.type == OPERAND_LABEL || arg.type == OPERAND_FUNCTION)
+        _output += "  lea " + reg + ", [rip + " + emit_operand(arg) + "]\n";
       else
         _output += "  mov " + reg + ", " + emit_value(arg) + "\n";
     }
 
-    _output += "  call " + emit_operand(name) + "\n";
+    if (name.type == OPERAND_FUNCTION)
+      _output += "  call " + emit_operand(name) + "\n";
+    else {
+      _output += "  mov r10, " + emit_value(name) + "\n";
+      _output += "  call r10\n";
+    }
 
     store_scratch(dst, "rax");
   } break;
 
   case OP_RET: {
-    if (!instr.srcs.empty()) {
+    if (instr.srcs.size() == 3 &&
+        instr.srcs[0].type == OPERAND_CONSTANT_INT) {
+      auto cmp_op = static_cast<Opcode>(instr.srcs[0].int_value);
+      const char *set = nullptr;
+      switch (cmp_op) {
+      case OP_CMP_EQ:  set = "sete"; break;
+      case OP_CMP_NEQ: set = "setne"; break;
+      case OP_CMP_LT:  set = "setl"; break;
+      case OP_CMP_LTE: set = "setle"; break;
+      case OP_CMP_GT:  set = "setg"; break;
+      case OP_CMP_GTE: set = "setge"; break;
+      default: break;
+      }
+      _output += "  mov r10, " + emit_value(instr.srcs[1]) + "\n";
+      _output += "  cmp r10, " + emit_value(instr.srcs[2]) + "\n";
+      _output += std::format("  {}\n", set);
+      _output += "  movzx rax, al\n";
+    } else if (!instr.srcs.empty()) {
       Operand src = instr.srcs[0];
       if (src.type == OPERAND_VARIABLE)
         _output += "  mov rax, [rsp + " + emit_operand(src) + "]\n";
@@ -440,6 +513,7 @@ std::string X86_64LinuxGasEmitter::emit_value(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_value(*get_constant(operand.name));
+  case OPERAND_STACK_ADDR:
   case OPERAND_VARIABLE:
     return "[rsp + " + std::to_string(_stack_loc.at(operand.name)) + "]";
   case OPERAND_TEMPORARY: {
@@ -470,6 +544,7 @@ std::string X86_64LinuxGasEmitter::emit_operand(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
+  case OPERAND_STACK_ADDR:
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
   case OPERAND_TEMPORARY: {
     const auto &alloc = current_alloc().at(operand.name);

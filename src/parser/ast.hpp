@@ -34,6 +34,7 @@ namespace decl {
     Linkage linkage;
     bool is_comptime = false;
     Block body;
+    std::string codegen_name;
   };
 
   struct ComptimeBlock {
@@ -87,7 +88,7 @@ namespace stmt {
   struct Var {
     Token name;
     Type *type;
-    Expr *value;
+    std::optional<Expr *> value = std::nullopt;
   };
 
   struct Return {
@@ -101,7 +102,7 @@ namespace stmt {
   };
 
   struct Assign {
-    Token name;
+    Expr *target;
     Expr *value;
   };
 
@@ -127,6 +128,10 @@ namespace stmt {
     std::vector<Stmt *> false_block;
   };
 
+  struct ExprStmt {
+    Expr *expr;
+  };
+
 } // namespace stmt
 
 enum StmtType {
@@ -140,13 +145,14 @@ enum StmtType {
   STMT_BREAK,
   STMT_CONTINUE,
   STMT_WHEN,
+  STMT_EXPR,
 };
 struct Stmt {
   StmtType type;
   size_t start, end;
   std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *,
                stmt::Assign *, stmt::While *, stmt::For *, stmt::Break *,
-               stmt::Continue *, stmt::When *>
+               stmt::Continue *, stmt::When *, stmt::ExprStmt *>
       data;
 };
 
@@ -202,9 +208,16 @@ namespace expr {
 
   struct Call {
     std::optional<Token> module;
+    std::optional<Token> name;
+    Expr *callee = nullptr;
     std::optional<std::string> resolved_module;
-    Token name;
+    std::optional<std::string> resolved_codegen_name;
     std::vector<Expr *> arguments;
+    Expr *receiver = nullptr;
+  };
+
+  struct TupleLit {
+    std::vector<Expr *> elements;
   };
 
   struct ComptimeCall {
@@ -229,6 +242,27 @@ namespace expr {
 
   struct String {
     Token value;
+  };
+
+  struct Sizeof {
+    Type *type;
+  };
+
+  struct Cast {
+    Type *target;
+    Expr *expr;
+  };
+
+  struct Index {
+    Expr *base;
+    Expr *index;
+  };
+
+  struct ProcLit {
+    std::vector<Param> params;
+    Type *ret_type;
+    Block body;
+    std::string codegen_name;
   };
 
 } // namespace expr
@@ -265,6 +299,11 @@ enum ExprType {
   EXPR_FIELD,
   EXPR_STRUCT_LIT,
   EXPR_STRING,
+  EXPR_SIZEOF,
+  EXPR_CAST,
+  EXPR_INDEX,
+  EXPR_PROC_LIT,
+  EXPR_TUPLE,
 };
 struct Expr {
   ExprType type;
@@ -272,7 +311,8 @@ struct Expr {
   std::variant<expr::Int *, expr::Bool *, expr::Var *, expr::Group *,
                expr::Binary *, expr::Ref *, expr::Deref *, expr::Call *,
                expr::ComptimeCall *, expr::Not *, expr::Field *,
-               expr::StructLit *, expr::String *>
+               expr::StructLit *, expr::String *, expr::Sizeof *,
+               expr::Cast *, expr::Index *, expr::ProcLit *, expr::TupleLit *>
       data;
   Type *expr_type = nullptr;
 
@@ -320,10 +360,14 @@ public:
     case EXPR_CALL: {
       auto x = std::get<expr::Call *>(data);
       std::string out;
-      if (x->module.has_value())
-        out = std::format("{}:{}", x->module->id_value, x->name.id_value);
-      else
-        out = std::format("{}", x->name.id_value);
+      if (x->callee != nullptr) {
+        out = x->callee->to_string();
+      } else if (x->name.has_value()) {
+        if (x->module.has_value())
+          out = std::format("{}:{}", x->module->id_value, x->name->id_value);
+        else
+          out = std::format("{}", x->name->id_value);
+      }
       out += "(";
       for (size_t i = 0; i < x->arguments.size(); i++) {
         out += x->arguments[i]->to_string();
@@ -374,6 +418,35 @@ public:
       auto x = std::get<expr::String *>(data);
       return std::format("\"{}\"", x->value.string_value);
     }
+
+    case EXPR_SIZEOF:
+      return "sizeof(...)";
+
+    case EXPR_CAST: {
+      auto x = std::get<expr::Cast *>(data);
+      return std::format("cast(...) {}", x->expr->to_string());
+    }
+
+    case EXPR_INDEX: {
+      auto x = std::get<expr::Index *>(data);
+      return std::format("{}[{}]", x->base->to_string(),
+                         x->index->to_string());
+    }
+
+    case EXPR_PROC_LIT:
+      return "proc { ... }";
+
+    case EXPR_TUPLE: {
+      auto *tuple = std::get<expr::TupleLit *>(data);
+      std::string out = "(";
+      for (size_t i = 0; i < tuple->elements.size(); i++) {
+        out += tuple->elements[i]->to_string();
+        if (i + 1 < tuple->elements.size())
+          out += ", ";
+      }
+      out += ")";
+      return out;
+    }
     }
     std::unreachable();
   }
@@ -382,7 +455,8 @@ public:
     switch (type) {
     case EXPR_VAR:
     case EXPR_DEREF:
-    case EXPR_FIELD: return true;
+    case EXPR_FIELD:
+    case EXPR_INDEX: return true;
 
     case EXPR_INT:
     case EXPR_BOOL:
@@ -393,7 +467,11 @@ public:
     case EXPR_COMPTIME_CALL:
     case EXPR_NOT:
     case EXPR_STRUCT_LIT:
-    case EXPR_STRING: return false;
+    case EXPR_STRING:
+    case EXPR_SIZEOF:
+    case EXPR_CAST:
+    case EXPR_PROC_LIT:
+    case EXPR_TUPLE: return false;
     }
     std::unreachable();
   }
@@ -409,13 +487,31 @@ namespace type {
     std::string_view name;
   };
 
+  struct Proc {
+    std::vector<Param> params;
+    Type *ret_type;
+  };
+
+  struct Tuple {
+    std::vector<Type *> elements;
+  };
+
 } // namespace type
 
-enum TypeType { TYPE_VOID, TYPE_BOOL, TYPE_INT, TYPE_BYTE, TYPE_PTR, TYPE_STRUCT };
+enum TypeType {
+  TYPE_VOID,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_BYTE,
+  TYPE_PTR,
+  TYPE_STRUCT,
+  TYPE_PROC,
+  TYPE_TUPLE,
+};
 struct Type {
   TypeType type;
   size_t start, end;
-  std::variant<type::Ptr *, type::Struct *> data;
+  std::variant<type::Ptr *, type::Struct *, type::Proc *, type::Tuple *> data;
 
 public:
   std::string to_string() const {
@@ -430,6 +526,29 @@ public:
     }
     case TYPE_STRUCT:
       return std::string(std::get<type::Struct *>(data)->name);
+    case TYPE_PROC: {
+      auto *proc = std::get<type::Proc *>(data);
+      std::string sig = "proc(";
+      for (size_t i = 0; i < proc->params.size(); i++) {
+        if (i > 0)
+          sig += ", ";
+        sig += std::string(proc->params[i].name.id_value) + " " +
+               proc->params[i].type->to_string();
+      }
+      sig += ") " + proc->ret_type->to_string();
+      return sig;
+    }
+    case TYPE_TUPLE: {
+      auto *tuple = std::get<type::Tuple *>(data);
+      std::string out = "(";
+      for (size_t i = 0; i < tuple->elements.size(); i++) {
+        out += tuple->elements[i]->to_string();
+        if (i + 1 < tuple->elements.size())
+          out += ", ";
+      }
+      out += ")";
+      return out;
+    }
     }
     std::unreachable();
   }
@@ -444,5 +563,17 @@ public:
 
     Type *pointee = (*ptr_data)->inner;
     return pointee->type == actual->type;
+  }
+
+  // Struct type used for field lookup; auto-derefs one level of pointer.
+  Type *as_struct_for_field_access() {
+    if (type == TYPE_STRUCT)
+      return this;
+    if (type == TYPE_PTR) {
+      Type *inner = std::get<type::Ptr *>(data)->inner;
+      if (inner->type == TYPE_STRUCT)
+        return inner;
+    }
+    return nullptr;
   }
 };

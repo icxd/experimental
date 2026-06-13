@@ -20,6 +20,7 @@ private:
   std::string emit_operand(Operand operand) override;
   std::string emit_value(Operand operand);
   void store_scratch(const Operand &dst, const std::string &scratch);
+  std::string asm_function_name(const std::string &name) const;
 
   const std::map<std::string, TempAllocation> &current_alloc() const {
     return _register_maps.at(_current_fn);
@@ -46,5 +47,5 @@ private:
   std::map<std::string, size_t> _spill_loc{};
   size_t _next_stack_loc = 16;
   std::map<std::string, std::map<std::string, TempAllocation>> _register_maps;
-  std::vector<std::string> _registers{"x19", "x20", "x21", "x22"};
+  std::vector<std::string> _registers{"x12", "x13", "x14", "x15"};
 };

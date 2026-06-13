@@ -1,0 +1,12 @@
+/// 42
+
+import "std/alloc.rye";
+
+proc main() int {
+  var raw *byte = alloc(8);
+  var ints *int = cast(*int) raw;
+  ints[0] = 42;
+  var n int = ints[0];
+  dealloc(raw);
+  return n;
+}

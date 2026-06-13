@@ -23,6 +23,8 @@ enum TokenType {
   TOK_CONTINUE,
   TOK_IMPORT,
   TOK_STRUCT,
+  TOK_SIZEOF,
+  TOK_CAST,
 
   TOK_STRING,
   TOK_COLON,
@@ -30,6 +32,8 @@ enum TokenType {
 
   TOK_OPAREN,
   TOK_CPAREN,
+  TOK_OBRACKET,
+  TOK_CBRACKET,
   TOK_OBRACE,
   TOK_CBRACE,
   TOK_COMMA,
@@ -80,11 +84,15 @@ struct Token {
     case TOK_CONTINUE:  return std::format("TOK_CONTINUE");
     case TOK_IMPORT:    return std::format("TOK_IMPORT");
     case TOK_STRUCT:    return std::format("TOK_STRUCT");
+    case TOK_SIZEOF:    return std::format("TOK_SIZEOF");
+    case TOK_CAST:      return std::format("TOK_CAST");
     case TOK_STRING:    return std::format("TOK_STRING({})", string_value);
     case TOK_COLON:     return std::format("TOK_COLON");
     case TOK_DOT:       return std::format("TOK_DOT");
     case TOK_OPAREN:    return std::format("TOK_OPAREN");
     case TOK_CPAREN:    return std::format("TOK_CPAREN");
+    case TOK_OBRACKET:  return std::format("TOK_OBRACKET");
+    case TOK_CBRACKET:  return std::format("TOK_CBRACKET");
     case TOK_OBRACE:    return std::format("TOK_OBRACE");
     case TOK_CBRACE:    return std::format("TOK_CBRACE");
     case TOK_COMMA:     return std::format("TOK_COMMA");

@@ -81,6 +81,7 @@ struct Error {
   std::string message;
   size_t start, end;
   std::string hint = "";
+  std::string file_path = "";
   std::vector<ErrorHelp> helps = {};
 
   Error(std::string msg, size_t s, size_t e) :
@@ -88,6 +89,11 @@ struct Error {
 
   Error &with_hint(std::string h) {
     hint = std::move(h);
+    return *this;
+  }
+
+  Error &with_file(std::string path) {
+    file_path = std::move(path);
     return *this;
   }
 
@@ -155,77 +161,233 @@ static std::string replace_span(size_t start, size_t end,
   return source.substr(0, start) + replacement + source.substr(end);
 }
 
-static void print_error_help(std::string_view source, ErrorHelp help) {
-  size_t line = 1, column = 1;
-  for (size_t i = 0; i < help.start; i++) {
-    if (source.at(i) == '\n') {
+static std::pair<size_t, size_t> offset_to_line_column(std::string_view source,
+                                                       size_t offset) {
+  size_t line = 0, column = 0;
+  for (size_t i = 0; i < offset && i < source.size(); i++) {
+    if (source[i] == '\n') {
       line++;
-      column = 1;
+      column = 0;
     } else {
       column++;
     }
   }
+  return {line, column};
+}
 
-  std::vector<std::string_view> lines = split(source, '\n');
-  std::string code_line = std::string(lines[line - 1]);
-  if (help.replacement.has_value())
-    code_line = split(replace_span(help.start, help.end, *help.replacement,
-                                   std::string(source)),
-                      '\n')[line - 1];
+struct LineSpan {
+  size_t start_line;
+  size_t start_col;
+  size_t end_line;
+  size_t end_col;
+};
 
+static LineSpan line_span(std::string_view source, size_t start, size_t end) {
+  auto lines = split(source, '\n');
+  end = std::min(std::max(end, start + 1), source.size());
 
-  size_t line_width = std::to_string(line).size();
+  auto [start_line, start_col] = offset_to_line_column(source, start);
+  auto [end_line, end_col] = offset_to_line_column(source, end);
 
-  std::println("\033[1;36mHelp:\033[0m {}", help.message);
-  std::println("\033[1;34m {} | \033[0m{}", line, code_line);
+  if (end > 0 && end <= source.size() && source[end - 1] == '\n' &&
+      end_line > start_line) {
+    end_line--;
+    end_col = lines[end_line].size();
+  } else if (end_line > start_line && end_col == 0) {
+    end_line--;
+    end_col = lines[end_line].size();
+  }
 
-  size_t underline_len = std::max<size_t>(1, help.end - help.start);
-  std::println("\033[1;34m {} | \033[0;36m{}{}\033[0m",
-               std::string(line_width, ' '), std::string(column - 1, ' '),
-               std::string(help.replacement.has_value()
-                               ? help.replacement->size()
-                               : underline_len,
-                           '~'));
+  if (end_line == start_line && end_col <= start_col)
+    end_col = std::min(start_col + 1, lines[start_line].size());
+
+  return {start_line, start_col, end_line, end_col};
+}
+
+static void print_source_snippet(std::string_view source, size_t start,
+                                 size_t end, char marker,
+                                 const char *marker_color) {
+  if (source.empty() || start >= source.size())
+    return;
+
+  auto lines = split(source, '\n');
+  auto span = line_span(source, start, end);
+  size_t line_width = std::to_string(span.end_line + 1).size();
+
+  std::println("\033[34;1m {:>{}} |\033[0m", "", line_width);
+  for (size_t line = span.start_line;
+       line <= span.end_line && line < lines.size(); line++) {
+    std::println("\033[34;1m {:>{}} | \033[0m{}", line + 1, line_width,
+                 lines[line]);
+
+    size_t hl_start = (line == span.start_line) ? span.start_col : 0;
+    size_t hl_end =
+        (line == span.end_line) ? span.end_col : lines[line].size();
+    size_t hl_len = std::max<size_t>(1, hl_end > hl_start ? hl_end - hl_start : 1);
+
+    std::print("\033[34;1m {:>{}} | \033[0m", "", line_width);
+    std::print("{}", std::string(hl_start, ' '));
+    std::println("{}{}{}", marker_color, std::string(hl_len, marker), "\033[0m");
+  }
+  std::println("\033[34;1m {:>{}} |\033[0m", "", line_width);
+}
+
+static void print_error_help(std::string_view source, ErrorHelp help) {
+  std::println("\033[1;36m   = help:\033[0m {}", help.message);
+  if (!help.replacement.has_value())
+    return;
+
+  std::string modified =
+      replace_span(help.start, help.end, *help.replacement, std::string(source));
+  size_t highlight_end = help.start + help.replacement->size();
+  print_source_snippet(modified, help.start, highlight_end, '~', "\033[0;36m");
 }
 
 static void print_error(std::string_view source, std::string_view file_path,
                         Error error) {
+  if (file_path.empty() && !error.file_path.empty())
+    file_path = error.file_path;
+
+  std::println();
+
   if (source.empty() || error.start >= source.size()) {
-    std::println("\033[31;1mError: \033[0m{}", error.message);
+    std::println("\033[31;1merror:\033[0m {}", error.message);
     if (!file_path.empty())
-      std::println("\033[34;1m --> {}\033[0m", file_path);
+      std::println("\033[34;1m   --> {}\033[0m", file_path);
     if (!error.hint.empty())
-      std::println("{}", error.hint);
+      std::println("\033[1;36m   = note:\033[0m {}", error.hint);
     for (const auto &help: error.helps)
-      std::println("\033[1;36mHelp:\033[0m {}", help.message);
+      print_error_help(source, help);
     return;
   }
 
-  size_t line = 1, column = 1;
-  for (size_t i = 0; i < error.start; i++) {
-    if (source.at(i) == '\n') {
-      line++;
-      column = 1;
-    } else {
-      column++;
-    }
+  size_t end = std::min(error.end, source.size());
+  auto span = line_span(source, error.start, end);
+  size_t line_width = std::to_string(span.end_line + 1).size();
+  size_t start_line = span.start_line + 1;
+  size_t start_col = span.start_col + 1;
+
+  std::println("\033[31;1merror:\033[0m {}", error.message);
+  if (span.end_line > span.start_line) {
+    std::println("\033[34;1m {:>{}}--> {}:{}:{}-{}:{}\033[0m", "", line_width,
+                 file_path, start_line, start_col, span.end_line + 1,
+                 span.end_col + 1);
+  } else {
+    std::println("\033[34;1m {:>{}}--> {}:{}:{}\033[0m", "", line_width,
+                 file_path, start_line, start_col);
   }
 
-  std::vector<std::string_view> lines = split(source, '\n');
-  size_t line_width = std::to_string(line).size();
+  print_source_snippet(source, error.start, end, '^', "\033[0;31m");
 
-  std::println("\033[31;1mError: \033[0m{}", error.message);
-  std::println("\033[34;1m {:{}}--> {}:{}:{}\033[0m", ' ',
-               std::to_string(line).size(), file_path, line, column);
-  std::println("\033[34;1m {} | \033[0m{}", line, lines[line - 1]);
-
-  size_t underline_len = std::max<size_t>(1, error.end - error.start);
-  std::println("\033[34;1m {} | \033[0;31m{}{} {}\033[0m",
-               std::string(line_width, ' '), std::string(column - 1, ' '),
-               std::string(underline_len, '^'), error.hint);
+  if (!error.hint.empty())
+    std::println("\033[1;36m   = note:\033[0m {}", error.hint);
 
   for (const auto &help: error.helps)
     print_error_help(source, help);
+}
+
+static std::string json_escape(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (char ch: text) {
+    switch (ch) {
+    case '\\': out += "\\\\"; break;
+    case '"':  out += "\\\""; break;
+    case '\n': out += "\\n"; break;
+    case '\r': out += "\\r"; break;
+    case '\t': out += "\\t"; break;
+    default:   out += ch; break;
+    }
+  }
+  return out;
+}
+
+static void print_diagnostics_json(std::string_view source,
+                                   std::string_view file_path, Error error) {
+  if (file_path.empty() && !error.file_path.empty())
+    file_path = error.file_path;
+
+  std::string message = error.message;
+
+  if (source.empty() || error.start >= source.size()) {
+    if (!error.hint.empty())
+      std::println(
+          R"({{"diagnostics":[{{"file":"{}","message":"{}","hint":"{}","severity":"error","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":0}}}}}}]}})",
+          json_escape(file_path), json_escape(message), json_escape(error.hint));
+    else
+      std::println(
+          R"({{"diagnostics":[{{"file":"{}","message":"{}","severity":"error","range":{{"start":{{"line":0,"character":0}},"end":{{"line":0,"character":0}}}}}}]}})",
+          json_escape(file_path), json_escape(message));
+    return;
+  }
+
+  auto [start_line, start_col] = offset_to_line_column(source, error.start);
+  auto [end_line, end_col] = offset_to_line_column(source, error.end);
+
+  if (!error.hint.empty())
+    std::println(
+        R"({{"diagnostics":[{{"file":"{}","message":"{}","hint":"{}","severity":"error","range":{{"start":{{"line":{},"character":{}}},"end":{{"line":{},"character":{}}}}}}}]}})",
+        json_escape(file_path), json_escape(message), json_escape(error.hint),
+        start_line, start_col, end_line, end_col);
+  else
+    std::println(
+        R"({{"diagnostics":[{{"file":"{}","message":"{}","severity":"error","range":{{"start":{{"line":{},"character":{}}},"end":{{"line":{},"character":{}}}}}}}]}})",
+        json_escape(file_path), json_escape(message), start_line, start_col,
+        end_line, end_col);
+}
+
+static void print_diagnostics_ok_json() {
+  std::println(R"({{"diagnostics":[]}})");
+}
+
+static size_t position_to_offset(std::string_view source, size_t line,
+                                 size_t character) {
+  size_t cur_line = 0;
+  size_t line_start = 0;
+  for (size_t i = 0; i <= source.size(); i++) {
+    if (cur_line == line) {
+      size_t end = i;
+      while (end < source.size() && source[end] != '\n')
+        end++;
+      size_t line_len = end - line_start;
+      size_t col = character > line_len ? line_len : character;
+      return line_start + col;
+    }
+    if (i == source.size())
+      break;
+    if (source[i] == '\n') {
+      cur_line++;
+      line_start = i + 1;
+    }
+  }
+  return source.size();
+}
+
+static bool is_ident_char(char ch) {
+  return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
+}
+
+static std::optional<std::pair<size_t, size_t>>
+identifier_span_at(std::string_view source, size_t offset) {
+  if (source.empty())
+    return std::nullopt;
+  if (offset >= source.size())
+    offset = source.size() - 1;
+  if (!is_ident_char(source[offset]) &&
+      offset > 0 &&
+      is_ident_char(source[offset - 1]))
+    offset--;
+
+  if (!is_ident_char(source[offset]))
+    return std::nullopt;
+
+  size_t start = offset;
+  while (start > 0 && is_ident_char(source[start - 1]))
+    start--;
+  size_t end = offset;
+  while (end < source.size() && is_ident_char(source[end]))
+    end++;
+  return std::pair{start, end};
 }
 
 template<typename T>

@@ -6,6 +6,7 @@
 struct LiveRange {
   std::string name;
   int start = -1, end = -1;
+  bool crosses_call = false;
   bool spilled = false;
   std::string assigned_register = "";
 };

@@ -28,14 +28,23 @@ public:
 
   std::optional<CheckedProc> find_proc(std::string_view module,
                                        std::string_view name) const {
+    auto procs = find_procs(module, name);
+    if (procs.empty())
+      return std::nullopt;
+    return procs.front();
+  }
+
+  std::vector<CheckedProc> find_procs(std::string_view module,
+                                      std::string_view name) const {
+    std::vector<CheckedProc> matches{};
     auto it = _modules.find(std::string(module));
     if (it == _modules.end())
-      return std::nullopt;
+      return matches;
     for (const auto &proc: it->second.procs) {
       if (proc.name == name)
-        return proc;
+        matches.push_back(proc);
     }
-    return std::nullopt;
+    return matches;
   }
 
   std::optional<CheckedConst> find_const(std::string_view module,

@@ -7,8 +7,8 @@ proc main() int {
   var b String = "foo";
   var c String = "bar";
 
-  if eq(&a, &b) {
-    if !eq(&a, &c) {
+  if a.eq(b) {
+    if !a.eq(c) {
       return 42;
     }
   }

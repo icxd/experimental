@@ -2,3 +2,7 @@ build/
 .idea/
 .cache/
 .rye/
+.test-work/
+node_modules/
+*.vsix
+.vscode/

@@ -1,11 +1,12 @@
 #pragma once
 
+#include <set>
 #include <utility>
 
 #include <common.hpp>
 #include <parser/ast.hpp>
 
-#ifdef IR_PRINT_COLORS
+#ifndef IR_PRINT_COLORS
 #define ANSI_BLACK "\033[30m"
 #define ANSI_RED "\033[31m"
 #define ANSI_GREEN "\033[32m"
@@ -31,6 +32,7 @@ enum OperandType {
   OPERAND_CONSTANT_INT,
   OPERAND_CONSTANT,
   OPERAND_VARIABLE,
+  OPERAND_STACK_ADDR,
   OPERAND_TEMPORARY,
   OPERAND_FUNCTION,
   OPERAND_LABEL,
@@ -52,6 +54,9 @@ struct Operand {
   static Operand Variable(const std::string &n) {
     return Operand{OPERAND_VARIABLE, n};
   }
+  static Operand StackAddr(const std::string &n) {
+    return Operand{OPERAND_STACK_ADDR, n};
+  }
   static Operand Temporary(const std::string &n) {
     return Operand{OPERAND_TEMPORARY, n};
   }
@@ -65,6 +70,7 @@ struct Operand {
   std::string debug() const {
     switch (type) {
     case OPERAND_VARIABLE:     return std::format("Variable({})", name);
+    case OPERAND_STACK_ADDR:   return std::format("StackAddr({})", name);
     case OPERAND_CONSTANT:     return std::format("Constant({})", name);
     case OPERAND_TEMPORARY:    return std::format("Temporary({})", name);
     case OPERAND_FUNCTION:     return std::format("Function({})", name);
@@ -76,7 +82,10 @@ struct Operand {
 
   std::string to_string() const {
     switch (type) {
-    case OPERAND_VARIABLE:  return ANSI_MAGENTA + name + ANSI_RESET;
+    case OPERAND_VARIABLE:
+      return ANSI_MAGENTA + name + ANSI_RESET;
+    case OPERAND_STACK_ADDR:
+      return std::format(ANSI_MAGENTA "&{}" ANSI_RESET, name);
     case OPERAND_CONSTANT:  return ANSI_BLUE + name + ANSI_RESET;
     case OPERAND_TEMPORARY: return ANSI_CYAN + name + ANSI_RESET;
     case OPERAND_FUNCTION:  return ANSI_GREEN + name + ANSI_RESET;
@@ -110,9 +119,23 @@ enum Opcode {
   OP_JMP,
   OP_JMP_IF_ZERO,
   OP_JMP_IF_NONZERO,
+  OP_JMP_IF_EQ,
+  OP_JMP_IF_NE,
   OP_CALL, // a = b(...)
   OP_RET, // ret a
 };
+
+static std::string get_cmp_op(Opcode opcode) {
+  switch (opcode) {
+  case OP_CMP_EQ: return "==";
+  case OP_CMP_NEQ: return "!=";
+  case OP_CMP_LT: return "<";
+  case OP_CMP_LTE: return "<=";
+  case OP_CMP_GT: return ">";
+  case OP_CMP_GTE: return ">=";
+  default: std::unreachable();
+  }
+}
 
 struct Instruction {
   Opcode opcode;
@@ -121,40 +144,40 @@ struct Instruction {
 
   std::string to_string() const {
     switch (opcode) {
-    case OP_NOP: return ANSI_RED "nop" ANSI_RESET;
+    case OP_NOP: return "  " ANSI_RED "nop" ANSI_RESET;
     case OP_ASSIGN:
-      return dst->to_string() + ANSI_RED " = " ANSI_RESET + srcs[0].to_string();
+      return "  " + dst->to_string() + ANSI_RED " = " ANSI_RESET + srcs[0].to_string();
     case OP_ADDROF:
-      return dst->to_string() + ANSI_RED " = &" ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = &" ANSI_RESET +
              srcs[0].to_string();
     case OP_DEREF:
-      return dst->to_string() + ANSI_RED " = *" ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = *" ANSI_RESET +
              srcs[0].to_string();
     case OP_LOAD_OFFSET:
-      return dst->to_string() + ANSI_RED " = *(" ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = *(" ANSI_RESET +
              srcs[0].to_string() + ANSI_RED " + " ANSI_RESET +
              srcs[1].to_string() + ANSI_RED ")\033[0m";
     case OP_STORE_OFFSET:
-      return ANSI_RED "*(" ANSI_RESET + srcs[0].to_string() + ANSI_RED " + " +
+      return "  " ANSI_RED "*(" ANSI_RESET + srcs[0].to_string() + ANSI_RED " + " +
              ANSI_RESET + srcs[1].to_string() + ANSI_RED ") = " ANSI_RESET +
              srcs[2].to_string();
     case OP_LOAD_LABEL:
-      return dst->to_string() + ANSI_RED " = &" ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = &" ANSI_RESET +
              srcs[0].to_string();
     case OP_ADD:
-      return dst->to_string() + ANSI_RED " = " ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = " ANSI_RESET +
              srcs[0].to_string() + ANSI_RED " + " ANSI_RESET +
              srcs[1].to_string();
     case OP_SUB:
-      return dst->to_string() + ANSI_RED " = " ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = " ANSI_RESET +
              srcs[0].to_string() + ANSI_RED " - " ANSI_RESET +
              srcs[1].to_string();
     case OP_MUL:
-      return dst->to_string() + ANSI_RED " = " ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = " ANSI_RESET +
              srcs[0].to_string() + ANSI_RED " * " ANSI_RESET +
              srcs[1].to_string();
     case OP_DIV:
-      return dst->to_string() + ANSI_RED " = " ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = " ANSI_RESET +
              srcs[0].to_string() + ANSI_RED " / " ANSI_RESET +
              srcs[1].to_string();
     case OP_CMP_EQ:
@@ -163,17 +186,25 @@ struct Instruction {
     case OP_CMP_LTE:
     case OP_CMP_GT:
     case OP_CMP_GTE:
-      return dst->to_string() + ANSI_RED " = cmp " ANSI_RESET +
-             srcs[0].to_string() + ANSI_RED " ? " ANSI_RESET +
+      return "  " + dst->to_string() + ANSI_RED " = cmp " ANSI_RESET +
+             srcs[0].to_string() + ANSI_RED " " + get_cmp_op(opcode) + " " ANSI_RESET +
              srcs[1].to_string();
     case OP_LABEL:      return srcs[0].to_string() + ":";
-    case OP_JMP:        return ANSI_RED "jmp " ANSI_RESET + srcs[0].to_string();
+    case OP_JMP:        return "  " ANSI_RED "jmp " ANSI_RESET + srcs[0].to_string();
     case OP_JMP_IF_ZERO:
-      return ANSI_RED "jz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
+      return "  " ANSI_RED "jz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
              ANSI_RESET + srcs[1].to_string();
     case OP_JMP_IF_NONZERO:
-      return ANSI_RED "jnz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
+      return "  " ANSI_RED "jnz " ANSI_RESET + srcs[0].to_string() + ANSI_RED " -> " +
              ANSI_RESET + srcs[1].to_string();
+    case OP_JMP_IF_EQ:
+      return "  " ANSI_RED "jeq " ANSI_RESET + srcs[0].to_string() + ANSI_RED ", " +
+             ANSI_RESET + srcs[1].to_string() + ANSI_RED " -> " +
+             ANSI_RESET + srcs[2].to_string();
+    case OP_JMP_IF_NE:
+      return "  " ANSI_RED "jne " ANSI_RESET + srcs[0].to_string() + ANSI_RED ", " +
+             ANSI_RESET + srcs[1].to_string() + ANSI_RED " -> " +
+             ANSI_RESET + srcs[2].to_string();
     case OP_CALL: {
       std::string out = dst->to_string() + ANSI_RED " = " ANSI_RESET +
                         srcs[0].to_string() + ANSI_RED "(";
@@ -183,9 +214,9 @@ struct Instruction {
           out += ANSI_RED ", ";
       }
       out += ANSI_RED ")";
-      return out;
+      return "  " + out;
     }
-    case OP_RET: return ANSI_RED "ret " ANSI_RESET + srcs[0].to_string();
+    case OP_RET: return "  " ANSI_RED "ret " ANSI_RESET + srcs[0].to_string();
     }
     std::unreachable();
   }
@@ -196,6 +227,8 @@ struct Function {
   std::vector<std::string_view> parameters;
   std::vector<Instruction> instructions;
   std::map<std::string, size_t> variable_sizes;
+  std::set<std::string> indirect_vars;
+  std::set<std::string> struct_value_params;
   Linkage linkage = LINK_INTERN;
 
   void print() const {
@@ -351,4 +384,20 @@ private:
 
 std::vector<Instruction> fold_constants(const std::vector<Instruction> &input);
 std::vector<Instruction>
+copy_propagate(const std::vector<Instruction> &input);
+std::vector<Instruction>
+fold_branches(const std::vector<Instruction> &input);
+std::vector<Instruction>
 fold_temporaries(const std::vector<Instruction> &input);
+std::vector<Instruction> global_cse(const std::vector<Instruction> &input);
+std::vector<Instruction>
+store_load_forward(const std::vector<Instruction> &input);
+std::vector<Instruction>
+fuse_cmp_branch(const std::vector<Instruction> &input);
+std::vector<Instruction>
+eliminate_copy_assigns(const std::vector<Instruction> &input);
+std::vector<Instruction>
+simplify_cfg(const std::vector<Instruction> &input);
+std::vector<Instruction>
+dead_code_elim(const std::vector<Instruction> &input);
+void optimize_function(Function &fn);

@@ -1,0 +1,13 @@
+/// 45
+
+proc pick(x int) int {
+  return x + 10;
+}
+
+proc pick(x byte) int {
+  return cast(int) x + 20;
+}
+
+proc main() int {
+  return pick(10) + pick(cast(byte) 5);
+}

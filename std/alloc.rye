@@ -1,0 +1,17 @@
+import "std/mem.rye";
+
+proc alloc(size int) *byte {
+  return malloc(size);
+}
+
+proc alloc_zeroed(size int) *byte {
+  return calloc(1, size);
+}
+
+proc resize(ptr *byte, new_size int) *byte {
+  return realloc(ptr, new_size);
+}
+
+proc dealloc(ptr *byte) void {
+  free(ptr);
+}

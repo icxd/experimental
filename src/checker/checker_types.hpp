@@ -35,10 +35,19 @@ struct CheckedParam {
 
 struct CheckedProc {
   std::string_view name;
+  std::string codegen_name;
   std::vector<CheckedParam> params;
   Type *ret_type;
   Scope *scope;
   Linkage linkage = LINK_INTERN;
+  decl::Proc *decl = nullptr;
+};
+
+struct CheckedLambda {
+  std::string codegen_name;
+  std::vector<CheckedParam> params;
+  Type *ret_type;
+  Block body;
 };
 
 struct CheckedConst {

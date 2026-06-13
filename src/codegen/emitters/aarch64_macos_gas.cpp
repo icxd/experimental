@@ -12,6 +12,27 @@ static size_t variable_stack_size(const Function &function,
   return 8;
 }
 
+static size_t align_stack(size_t size) {
+  return (size + 15) & ~size_t(15);
+}
+
+static bool var_is_indirect(const Function *fn, std::string_view name) {
+  return fn != nullptr && fn->indirect_vars.contains(std::string(name));
+}
+
+static bool var_is_struct_value(const Function *fn, std::string_view name) {
+  return fn != nullptr && fn->struct_value_params.contains(std::string(name));
+}
+
+static void emit_struct_param_copy(std::string &output, const std::string &src_reg,
+                                   size_t dest_off, size_t size) {
+  output += "  mov x9, " + src_reg + "\n";
+  for (size_t off = 0; off < size; off += 8) {
+    output += "  ldr x10, [x9, #" + std::to_string(off) + "]\n";
+    output += "  str x10, [sp, #" + std::to_string(dest_off + off) + "]\n";
+  }
+}
+
 static size_t compute_locals_size(const Function &function) {
   std::set<std::string> local_vars;
   for (const auto &instr: function.instructions) {
@@ -33,7 +54,7 @@ static void emit_rodata_section(std::string &output,
                                 const std::vector<RodataEntry> &rodata) {
   if (rodata.empty())
     return;
-  output += ".section .rodata\n";
+  output += ".section __TEXT,__cstring,cstring_literals\n";
   for (const auto &entry: rodata) {
     output += entry.label + ":\n";
     output += "  .asciz \"";
@@ -118,9 +139,9 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
     };
 
     for (size_t i = 0; i < function.parameters.size(); i++) {
-      std::string_view param = function.parameters[i];
-      _stack_loc.insert({std::string(param), _next_stack_loc});
-      _next_stack_loc += 16;
+      std::string param(function.parameters[i]);
+      _stack_loc.insert({param, _next_stack_loc});
+      _next_stack_loc += variable_stack_size(function, param);
     }
 
     for (const auto &[temp, alloc]: regmap) {
@@ -132,7 +153,7 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
 
     layout_locals();
 
-    size_t stack_size = _next_stack_loc;
+    size_t stack_size = align_stack(_next_stack_loc);
     if (stack_size < 16)
       stack_size = 16;
 
@@ -148,11 +169,17 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
     _var_sizes.clear();
 
     for (size_t i = 0; i < function.parameters.size(); i++) {
-      std::string_view param = function.parameters[i];
-      _stack_loc.insert({std::string(param), _next_stack_loc});
-      _output += "  str x" + std::to_string(i) + ", [sp, #" +
-                 std::to_string(_next_stack_loc) + "]\n";
-      _next_stack_loc += 16;
+      std::string param(function.parameters[i]);
+      size_t stack_off = _next_stack_loc;
+      _stack_loc.insert({param, stack_off});
+      if (var_is_struct_value(&function, param)) {
+        emit_struct_param_copy(_output, "x" + std::to_string(i), stack_off,
+                               variable_stack_size(function, param));
+      } else {
+        _output += "  str x" + std::to_string(i) + ", [sp, #" +
+                   std::to_string(stack_off) + "]\n";
+      }
+      _next_stack_loc += variable_stack_size(function, param);
     }
 
     for (const auto &[temp, alloc]: regmap) {
@@ -178,8 +205,21 @@ void Aarch64MacosGasEmitter::emit_function(Function function) {
 
     _output += "  ret\n";
   } else {
-    _output += ".extern " + name + "\n";
+    _output += ".extern " + asm_function_name(name) + "\n";
   }
+}
+
+std::string Aarch64MacosGasEmitter::asm_function_name(const std::string &name) const {
+  for (const Function *fn: _functions) {
+    if (fn->name == name) {
+      if (fn->linkage == LINK_EXTERN && name != "main")
+        return "_" + name;
+      return name;
+    }
+  }
+  if (name != "main" && name.find('_') == std::string::npos)
+    return "_" + name;
+  return name;
 }
 
 void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
@@ -200,53 +240,56 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   if (instr.dst.has_value() && instr.dst->type == OPERAND_VARIABLE)
     ensure_var(instr.dst->name);
   for (const auto &src: instr.srcs) {
-    if (src.type == OPERAND_VARIABLE)
+    if (src.type == OPERAND_VARIABLE || src.type == OPERAND_STACK_ADDR)
       ensure_var(src.name);
   }
 
+  auto load_into = [&](const std::string &reg, const Operand &src) {
+    if (src.type == OPERAND_STACK_ADDR) {
+      _output += "  add " + reg + ", sp, #" + emit_operand(src) + "\n";
+      return;
+    }
+    if (src.type == OPERAND_LABEL || src.type == OPERAND_FUNCTION) {
+      _output += "  adrp " + reg + ", " + emit_operand(src) + "@PAGE\n";
+      _output += "  add " + reg + ", " + reg + ", " + emit_operand(src) +
+                 "@PAGEOFF\n";
+      return;
+    }
+    if (src.type == OPERAND_TEMPORARY &&
+        !current_alloc().at(src.name).spilled)
+      _output += "  mov " + reg + ", " + current_alloc().at(src.name).reg + "\n";
+    else if (src.type == OPERAND_VARIABLE || src.type == OPERAND_TEMPORARY)
+      _output += "  ldr " + reg + ", " + emit_value(src) + "\n";
+    else
+      _output += "  mov " + reg + ", " + emit_value(src) + "\n";
+  };
+
   switch (instr.opcode) {
-  case OP_NOP:    break;
+  case OP_NOP: break;
 
   case OP_ASSIGN: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 1);
-    Operand src = instr.srcs[0];
-
-    _output += "  mov x9, " + emit_operand(src) + "\n";
-    _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
+    load_into("x9", instr.srcs[0]);
+    store_scratch(dst, "x9");
   } break;
 
   case OP_ADDROF: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 1);
-    Operand src = instr.srcs[0];
-
-    _output += "  add x9, sp, " + emit_operand(src) + "\n";
-
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    _output += "  add x9, sp, #" + emit_operand(instr.srcs[0]) + "\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_DEREF: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
     assert(instr.srcs.size() == 1);
-    Operand src = instr.srcs[0];
-
-    _output += "  ldr x9, [sp, " + emit_operand(src) + "]\n";
+    load_into("x9", instr.srcs[0]);
     _output += "  ldr x9, [x9]\n";
-
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_LOAD_OFFSET: {
@@ -254,12 +297,18 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     Operand dst = *instr.dst;
     Operand base = instr.srcs[0];
     int64_t offset = instr.srcs[1].int_value;
-    if (base.type == OPERAND_VARIABLE) {
+    if (base.type == OPERAND_VARIABLE &&
+        !var_is_indirect(_current_function, base.name)) {
       size_t base_off = _stack_loc.at(base.name);
       _output += "  ldr x9, [sp, #" + std::to_string(base_off + offset) +
                  "]\n";
     } else {
-      _output += "  ldr x10, " + emit_value(base) + "\n";
+      if (base.type == OPERAND_VARIABLE) {
+        size_t base_off = _stack_loc.at(base.name);
+        _output += "  ldr x10, [sp, #" + std::to_string(base_off) + "]\n";
+      } else {
+        load_into("x10", base);
+      }
       if (offset != 0)
         _output += "  add x10, x10, #" + std::to_string(offset) + "\n";
       _output += "  ldr x9, [x10]\n";
@@ -271,13 +320,19 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     Operand base = instr.srcs[0];
     int64_t offset = instr.srcs[1].int_value;
     Operand value = instr.srcs[2];
-    _output += "  ldr x11, " + emit_value(value) + "\n";
-    if (base.type == OPERAND_VARIABLE) {
+    load_into("x11", value);
+    if (base.type == OPERAND_VARIABLE &&
+        !var_is_indirect(_current_function, base.name)) {
       size_t base_off = _stack_loc.at(base.name);
       _output += "  str x11, [sp, #" + std::to_string(base_off + offset) +
                  "]\n";
     } else {
-      _output += "  ldr x10, " + emit_value(base) + "\n";
+      if (base.type == OPERAND_VARIABLE) {
+        size_t base_off = _stack_loc.at(base.name);
+        _output += "  ldr x10, [sp, #" + std::to_string(base_off) + "]\n";
+      } else {
+        load_into("x10", base);
+      }
       if (offset != 0)
         _output += "  add x10, x10, #" + std::to_string(offset) + "\n";
       _output += "  str x11, [x10]\n";
@@ -295,61 +350,37 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   case OP_ADD: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-
-    assert(instr.srcs.size() == 2);
-    Operand src1 = instr.srcs[0];
-    Operand src2 = instr.srcs[1];
-
-    _output += "  mov x10, " + emit_operand(src1) + "\n";
-    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
     _output += "  add x9, x10, x11\n";
-
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_SUB: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-    Operand src1 = instr.srcs[0];
-    Operand src2 = instr.srcs[1];
-    _output += "  mov x10, " + emit_operand(src1) + "\n";
-    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
     _output += "  sub x9, x10, x11\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_MUL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-    Operand src1 = instr.srcs[0];
-    Operand src2 = instr.srcs[1];
-    _output += "  mov x10, " + emit_operand(src1) + "\n";
-    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
     _output += "  mul x9, x10, x11\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_DIV: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-    Operand src1 = instr.srcs[0];
-    Operand src2 = instr.srcs[1];
-    _output += "  mov x10, " + emit_operand(src1) + "\n";
-    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
     _output += "  sdiv x9, x10, x11\n";
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_CMP_EQ:
@@ -360,8 +391,6 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   case OP_CMP_GTE: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;
-    Operand src1 = instr.srcs[0];
-    Operand src2 = instr.srcs[1];
     const char *cond = nullptr;
     switch (instr.opcode) {
     case OP_CMP_EQ:  cond = "eq"; break;
@@ -372,14 +401,11 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     case OP_CMP_GTE: cond = "ge"; break;
     default: break;
     }
-    _output += "  mov x10, " + emit_operand(src1) + "\n";
-    _output += "  mov x11, " + emit_operand(src2) + "\n";
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
     _output += "  cmp x10, x11\n";
     _output += std::format("  cset x9, {}\n", cond);
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x9, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x9\n";
+    store_scratch(dst, "x9");
   } break;
 
   case OP_LABEL: {
@@ -391,21 +417,27 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
   } break;
 
   case OP_JMP_IF_ZERO: {
-    Operand cond = instr.srcs[0];
-    if (cond.type == OPERAND_VARIABLE)
-      _output += "  ldr x9, [sp, " + emit_operand(cond) + "\n";
-    else
-      _output += "  mov x9, " + emit_operand(cond) + "\n";
+    load_into("x9", instr.srcs[0]);
     _output += "  cbz x9, " + emit_operand(instr.srcs[1]) + "\n";
   } break;
 
   case OP_JMP_IF_NONZERO: {
-    Operand cond = instr.srcs[0];
-    if (cond.type == OPERAND_VARIABLE)
-      _output += "  ldr x9, [sp, " + emit_operand(cond) + "]\n";
-    else
-      _output += "  mov x9, " + emit_operand(cond) + "\n";
+    load_into("x9", instr.srcs[0]);
     _output += "  cbnz x9, " + emit_operand(instr.srcs[1]) + "\n";
+  } break;
+
+  case OP_JMP_IF_EQ: {
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
+    _output += "  cmp x10, x11\n";
+    _output += "  b.eq " + emit_operand(instr.srcs[2]) + "\n";
+  } break;
+
+  case OP_JMP_IF_NE: {
+    load_into("x10", instr.srcs[0]);
+    load_into("x11", instr.srcs[1]);
+    _output += "  cmp x10, x11\n";
+    _output += "  b.ne " + emit_operand(instr.srcs[2]) + "\n";
   } break;
 
   case OP_CALL: {
@@ -415,31 +447,60 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     assert(instr.srcs.size() >= 1);
     Operand name = instr.srcs[0];
 
-    for (size_t i = 1; i < instr.srcs.size(); i++) {
-      Operand arg = instr.srcs[i];
-
-      if (dst.type == OPERAND_VARIABLE)
-        _output += "  ldr x" + std::to_string(i - 1) + ", [sp, " +
-                   emit_operand(arg) + "]\n";
-      else
-        _output +=
-            "  mov " + emit_operand(arg) + ", x" + std::to_string(i - 1) + "\n";
+    for (size_t i = 1; i < instr.srcs.size(); i++)
+      load_into("x" + std::to_string(i - 1), instr.srcs[i]);
+    if (name.type == OPERAND_FUNCTION)
+      _output += "  bl " + emit_operand(name) + "\n";
+    else {
+      load_into("x16", name);
+      _output += "  blr x16\n";
     }
-    _output += "  bl " + emit_operand(name) + "\n";
-
-    if (dst.type == OPERAND_VARIABLE)
-      _output += "  str x0, [sp, " + emit_operand(dst) + "]\n";
-    else
-      _output += "  mov " + emit_operand(dst) + ", x0\n";
+    if (dst.type == OPERAND_VARIABLE && _current_function != nullptr) {
+      auto it = _current_function->variable_sizes.find(dst.name);
+      if (it != _current_function->variable_sizes.end() && it->second > 8) {
+        size_t loc = _stack_loc.at(dst.name);
+        _output += "  str x0, [sp, #" + std::to_string(loc) + "]\n";
+        _output += "  str x1, [sp, #" + std::to_string(loc + 8) + "]\n";
+      } else {
+        store_scratch(dst, "x0");
+      }
+    } else {
+      store_scratch(dst, "x0");
+    }
   } break;
 
   case OP_RET: {
-    if (!instr.srcs.empty()) {
-      Operand src = instr.srcs[0];
-      if (src.type == OPERAND_VARIABLE)
-        _output += "  ldr x0, [sp, " + emit_operand(src) + "]\n";
-      else
-        _output += "  mov x0, " + emit_operand(src) + "\n";
+    if (instr.srcs.size() == 3 &&
+        instr.srcs[0].type == OPERAND_CONSTANT_INT) {
+      auto cmp_op = static_cast<Opcode>(instr.srcs[0].int_value);
+      const char *cond = nullptr;
+      switch (cmp_op) {
+      case OP_CMP_EQ:  cond = "eq"; break;
+      case OP_CMP_NEQ: cond = "ne"; break;
+      case OP_CMP_LT:  cond = "lt"; break;
+      case OP_CMP_LTE: cond = "le"; break;
+      case OP_CMP_GT:  cond = "gt"; break;
+      case OP_CMP_GTE: cond = "ge"; break;
+      default: break;
+      }
+      load_into("x10", instr.srcs[1]);
+      load_into("x11", instr.srcs[2]);
+      _output += "  cmp x10, x11\n";
+      _output += std::format("  cset x0, {}\n", cond);
+    } else if (!instr.srcs.empty()) {
+      const Operand &ret = instr.srcs[0];
+      if (ret.type == OPERAND_VARIABLE && _current_function != nullptr) {
+        auto it = _current_function->variable_sizes.find(ret.name);
+        if (it != _current_function->variable_sizes.end() && it->second > 8) {
+          size_t loc = _stack_loc.at(ret.name);
+          _output += "  ldr x0, [sp, #" + std::to_string(loc) + "]\n";
+          _output += "  ldr x1, [sp, #" + std::to_string(loc + 8) + "]\n";
+        } else {
+          load_into("x0", ret);
+        }
+      } else {
+        load_into("x0", ret);
+      }
     }
     _output += "  b " + _end_label + "\n";
   } break;
@@ -450,12 +511,13 @@ std::string Aarch64MacosGasEmitter::emit_value(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("#{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_value(*get_constant(operand.name));
+  case OPERAND_STACK_ADDR:
   case OPERAND_VARIABLE:
-    return "[sp, " + std::to_string(_stack_loc.at(operand.name)) + "]";
+    return "[sp, #" + std::to_string(_stack_loc.at(operand.name)) + "]";
   case OPERAND_TEMPORARY: {
     const auto &alloc = current_alloc().at(operand.name);
     if (alloc.spilled)
-      return "[sp, " + std::to_string(_spill_loc.at(operand.name)) + "]";
+      return "[sp, #" + std::to_string(_spill_loc.at(operand.name)) + "]";
     return alloc.reg;
   }
   default: PANIC("unexpected operand in value position");
@@ -465,11 +527,11 @@ std::string Aarch64MacosGasEmitter::emit_value(Operand operand) {
 void Aarch64MacosGasEmitter::store_scratch(const Operand &dst,
                                            const std::string &scratch) {
   if (dst.type == OPERAND_VARIABLE)
-    _output += "  str " + scratch + ", [sp, " + emit_operand(dst) + "]\n";
+    _output += "  str " + scratch + ", [sp, #" + emit_operand(dst) + "]\n";
   else if (dst.type == OPERAND_TEMPORARY) {
     const auto &alloc = current_alloc().at(dst.name);
     if (alloc.spilled)
-      _output += "  str " + scratch + ", [sp, " +
+      _output += "  str " + scratch + ", [sp, #" +
                  std::to_string(_spill_loc.at(dst.name)) + "]\n";
     else
       _output += "  mov " + alloc.reg + ", " + scratch + "\n";
@@ -480,6 +542,7 @@ std::string Aarch64MacosGasEmitter::emit_operand(Operand operand) {
   switch (operand.type) {
   case OPERAND_CONSTANT_INT: return std::format("{}", operand.int_value);
   case OPERAND_CONSTANT:     return emit_operand(*get_constant(operand.name));
+  case OPERAND_STACK_ADDR:
   case OPERAND_VARIABLE:     return std::format("{}", _stack_loc.at(operand.name));
   case OPERAND_TEMPORARY: {
     const auto &alloc = current_alloc().at(operand.name);
@@ -487,7 +550,7 @@ std::string Aarch64MacosGasEmitter::emit_operand(Operand operand) {
       return std::to_string(_spill_loc.at(operand.name));
     return alloc.reg;
   }
-  case OPERAND_FUNCTION: return operand.name;
+  case OPERAND_FUNCTION: return asm_function_name(operand.name);
   case OPERAND_LABEL:    return operand.name;
   }
   std::unreachable();

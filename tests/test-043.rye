@@ -1,0 +1,9 @@
+/// 42
+
+import "std/alloc.rye";
+
+proc main() int {
+  var buf *byte = alloc(32);
+  dealloc(buf);
+  return 42;
+}

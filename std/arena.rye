@@ -1,0 +1,30 @@
+import "std/alloc.rye";
+
+struct Arena {
+  data *byte;
+  capacity int;
+  offset int;
+}
+
+proc init(a *Arena, capacity int) void {
+  (*a).data = alloc(capacity);
+  (*a).capacity = capacity;
+  (*a).offset = 0;
+}
+
+proc destroy(a *Arena) void {
+  dealloc((*a).data);
+}
+
+proc reset(a *Arena) void {
+  (*a).offset = 0;
+}
+
+proc bump(a *Arena, size int) *byte {
+  if (*a).offset + size > (*a).capacity {
+    return 0;
+  }
+  var ptr *byte = (*a).data + (*a).offset;
+  (*a).offset = (*a).offset + size;
+  return ptr;
+}

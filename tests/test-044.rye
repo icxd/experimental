@@ -1,0 +1,12 @@
+/// 99
+
+struct Pair {
+  a int;
+  b int;
+}
+
+proc main() int {
+  var p Pair = Pair{ a = 10, b = 20 };
+  p.b = 89;
+  return p.a + p.b;
+}

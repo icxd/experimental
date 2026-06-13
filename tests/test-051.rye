@@ -1,0 +1,20 @@
+/// 30
+
+struct Point {
+  x, y int;
+}
+
+proc init(p Point, x, y int) void {
+  p.x = x;
+  p.y = y;
+}
+
+proc sum(p Point) int {
+  return p.x + p.y;
+}
+
+proc main() int {
+  var p Point;
+  p.init(10, 20);
+  return p.sum();
+}

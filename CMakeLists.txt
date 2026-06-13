@@ -28,6 +28,11 @@ CPMAddPackage(
 
 add_executable(rye
     src/main.cpp
+    src/test_runner.cpp
+    src/frontend/project.cpp
+    src/lsp/json.cpp
+    src/lsp/ide.cpp
+    src/lsp/server.cpp
     src/lexer/lexer.cpp
     src/parser/parser.cpp
     src/checker/checker.cpp
@@ -43,6 +48,11 @@ target_include_directories(rye PRIVATE src)
 target_link_libraries(rye PRIVATE magic_enum::magic_enum)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  target_compile_options(rye PRIVATE -stdlib=libstdc++)
-  target_link_options(rye PRIVATE -stdlib=libstdc++)
+  if(APPLE)
+    target_compile_options(rye PRIVATE -stdlib=libc++)
+    target_link_options(rye PRIVATE -stdlib=libc++)
+  else()
+    target_compile_options(rye PRIVATE -stdlib=libstdc++)
+    target_link_options(rye PRIVATE -stdlib=libstdc++)
+  endif()
 endif()

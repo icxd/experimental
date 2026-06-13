@@ -1,229 +1,64 @@
-#include <memory>
-#include <queue>
+#include <cstdlib>
+#include <cstring>
 #include <set>
 
-#include <arena.hpp>
 #include <checker/checker.hpp>
-#include <checker/module_registry.hpp>
 #include <codegen/codegen.hpp>
 #include <common.hpp>
+#include <compile_cache.hpp>
 #include <compile_config.hpp>
+#include <frontend/project.hpp>
 #include <host.hpp>
 #include <ir/irgen.hpp>
 #include <lexer/lexer.hpp>
+#include <lsp/server.hpp>
 #include <module.hpp>
-#include <parser/parser.hpp>
 #include <parser/printer.hpp>
+#include <test_runner.hpp>
 
 namespace fs = std::filesystem;
 
-struct Opts {
-  std::vector<std::string> files = {};
-  std::vector<std::string> import_paths = {};
-  std::string output_file = "a.out";
-  CompileConfig config = {};
-  bool print_tokens = false;
-  bool print_ast = false;
-  bool print_ir = false;
-  bool check_only = false;
-};
+static void report_error(const Opts &opts, std::string_view source,
+                         std::string_view file_path, const Error &error) {
+  if (opts.diagnostics_json)
+    print_diagnostics_json(source, file_path, error);
+  else
+    print_error(source, file_path, error);
+}
 
-struct ParsedModule {
-  std::string rel_path;
-  std::string abs_path;
-  std::string module_name;
-  bool is_runtime = false;
+static void report_project_diagnostic(const Opts &opts, const Project &project,
+                                      const ProjectDiagnostic &diag) {
   std::string source;
-  std::unique_ptr<Arena> arena;
-  std::vector<Decl *> decls;
-  std::vector<std::string> import_abs_paths;
-};
-
-static std::string abs_path_of(const std::string &path) {
-  return fs::weakly_canonical(fs::path(path)).string();
-}
-
-static std::string rel_path_of(const std::string &path) {
-  fs::path canonical = fs::weakly_canonical(fs::path(path));
-  fs::path cwd = fs::current_path();
-  std::error_code ec;
-  fs::path rel = fs::relative(canonical, cwd, ec);
-  if (!ec)
-    return rel.string();
-  return canonical.string();
-}
-
-static ErrorOr<std::string> read_source(const std::string &path) {
-  std::fstream f(path);
-  if (!f.is_open())
-    return std::unexpected(
-        Error(std::format("Could not open `{}`", path), 0, 0));
-  std::stringstream ss;
-  ss << f.rdbuf();
-  return ss.str();
-}
-
-static ErrorOr<ParsedModule>
-parse_module(const std::string &path,
-             const std::vector<std::string> &import_search_paths) {
-  ParsedModule module{};
-  module.rel_path = rel_path_of(path);
-  module.abs_path = abs_path_of(path);
-  module.module_name = module_name_from_path(fs::path(module.rel_path));
-  module.is_runtime = is_runtime_module(module.rel_path);
-
-  auto source = read_source(module.rel_path);
-  if (!source.has_value())
-    return std::unexpected(source.error());
-  module.source = source.value();
-
-  Lexer lexer(module.source);
-  auto tokens = lexer.lex_tokens();
-  if (!tokens.has_value())
-    return std::unexpected(tokens.error());
-
-  module.arena = std::make_unique<Arena>();
-  Parser parser(tokens.value(), *module.arena);
-  auto decls = parser.parse_decls();
-  if (!decls.has_value())
-    return std::unexpected(decls.error());
-  module.decls = decls.value();
-
-  for (Decl *decl: module.decls) {
-    if (decl->type != DECL_IMPORT)
-      continue;
-    auto *import = std::get<decl::Import *>(decl->data);
-    std::vector<fs::path> search_paths{};
-    for (const auto &search_path: import_search_paths)
-      search_paths.push_back(fs::path(search_path));
-
-    auto resolved = resolve_import_path(module.abs_path, import->path.string_value,
-                                        search_paths);
-    if (!resolved.has_value()) {
-      return std::unexpected(
-          Error(std::format("Could not find module `{}`",
-                            import->path.string_value),
-                decl->start, decl->end));
-    }
-    module.import_abs_paths.push_back(abs_path_of(resolved->string()));
+  if (ParsedModule *module = const_cast<Project &>(project).find_module_by_rel(
+          diag.file_path);
+      module != nullptr)
+    source = module->source;
+  else if (!diag.file_path.empty()) {
+    auto contents = project_read_source(diag.file_path);
+    if (contents.has_value())
+      source = contents.value();
   }
-
-  return module;
-}
-
-static ErrorOr<std::map<std::string, ParsedModule>>
-discover_modules(const std::vector<std::string> &roots,
-                 const std::vector<std::string> &import_search_paths) {
-  std::map<std::string, ParsedModule> modules{};
-  std::queue<std::string> pending{};
-
-  for (const auto &root: roots)
-    pending.push(abs_path_of(root));
-
-  while (!pending.empty()) {
-    std::string path = pending.front();
-    pending.pop();
-
-    if (modules.contains(path))
-      continue;
-
-    auto parsed = parse_module(path, import_search_paths);
-    if (!parsed.has_value())
-      return std::unexpected(parsed.error());
-    ParsedModule module = std::move(parsed.value());
-    modules.insert({path, std::move(module)});
-
-    for (const auto &import_path: modules.at(path).import_abs_paths) {
-      if (!modules.contains(import_path))
-        pending.push(import_path);
-    }
-  }
-
-  return modules;
-}
-
-static ErrorOr<std::vector<std::string>>
-topo_sort_modules(const std::map<std::string, ParsedModule> &modules) {
-  std::map<std::string, int> indegree{};
-  std::map<std::string, std::vector<std::string>> dependents{};
-
-  for (const auto &[path, module]: modules) {
-    indegree.try_emplace(path, 0);
-    for (const auto &import_path: module.import_abs_paths) {
-      indegree[path]++;
-      dependents[import_path].push_back(path);
-    }
-  }
-
-  std::queue<std::string> ready{};
-  for (const auto &[path, degree]: indegree) {
-    if (degree == 0)
-      ready.push(path);
-  }
-
-  std::vector<std::string> order{};
-  while (!ready.empty()) {
-    std::string path = ready.front();
-    ready.pop();
-    order.push_back(path);
-
-    for (const auto &dependent: dependents[path]) {
-      if (--indegree[dependent] == 0)
-        ready.push(dependent);
-    }
-  }
-
-  if (order.size() != modules.size()) {
-    return std::unexpected(
-        Error("Circular import detected between modules", 0, 0));
-  }
-
-  return order;
-}
-
-static std::vector<std::string>
-prioritize_builtin_modules(const std::vector<std::string> &order,
-                           const std::map<std::string, ParsedModule> &modules) {
-  std::set<std::string> early{};
-  std::queue<std::string> pending{};
-
-  for (const auto &[path, module]: modules) {
-    if (module.is_runtime || is_prelude_module(module.rel_path)) {
-      if (!early.contains(path)) {
-        early.insert(path);
-        pending.push(path);
-      }
-    }
-  }
-
-  while (!pending.empty()) {
-    const ParsedModule &module = modules.at(pending.front());
-    pending.pop();
-    for (const auto &import_path: module.import_abs_paths) {
-      if (!early.contains(import_path)) {
-        early.insert(import_path);
-        pending.push(import_path);
-      }
-    }
-  }
-
-  std::vector<std::string> prioritized{};
-  std::vector<std::string> rest{};
-  for (const auto &path: order) {
-    if (early.contains(path))
-      prioritized.push_back(path);
-    else
-      rest.push_back(path);
-  }
-  prioritized.insert(prioritized.end(), rest.begin(), rest.end());
-  return prioritized;
+  Error error(diag.message, diag.start, diag.end);
+  error.file_path = diag.file_path;
+  error.hint = diag.hint;
+  error.helps = diag.helps;
+  report_error(opts, source, diag.file_path, error);
 }
 
 int main(int argc, char *argv[]) {
+  if (argc >= 2 && std::strcmp(argv[1], "lsp") == 0)
+    return run_lsp_server();
+
   char *program = eat_arg();
 
   Opts opts;
   opts.import_paths.push_back(fs::current_path().string());
+
+  if (argc >= 1 && std::strcmp(argv[0], "test") == 0) {
+    eat_arg();
+    return run_test_suite(opts, argc, argv);
+  }
+
   opts.files.push_back("runtime/ryert.rye");
   opts.files.push_back("std/string.rye");
 
@@ -242,6 +77,8 @@ int main(int argc, char *argv[]) {
       opts.print_ir = true;
     } else if (strncmp(opt, "--check-only", 12) == 0) {
       opts.check_only = true;
+    } else if (strncmp(opt, "--diagnostics-json", 18) == 0) {
+      opts.diagnostics_json = true;
     } else if (strncmp(opt, "-I", 2) == 0) {
       opts.import_paths.push_back(argv[i++]);
     } else if (strncmp(opt, "-D", 2) == 0) {
@@ -259,61 +96,51 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  auto discovered = discover_modules(opts.files, opts.import_paths);
-  if (!discovered.has_value()) {
-    print_error("", "", discovered.error());
-    return EXIT_FAILURE;
-  }
-  auto &modules = discovered.value();
+  ProjectOptions popts{
+      .import_paths = opts.import_paths,
+      .config = opts.config,
+  };
+  Project project(popts);
 
   if (opts.print_tokens) {
     for (const std::string &file_path: opts.files) {
-      const auto &module = modules.at(abs_path_of(file_path));
-      Lexer lexer(module.source);
+      auto source = project_read_source(file_path);
+      if (!source.has_value()) {
+        report_error(opts, "", file_path, source.error());
+        return EXIT_FAILURE;
+      }
+      Lexer lexer(source.value());
       auto tokens = lexer.lex_tokens();
       if (!tokens.has_value()) {
-        print_error(module.source, module.rel_path, tokens.error());
+        report_error(opts, source.value(), file_path, tokens.error());
         return EXIT_FAILURE;
       }
       for (const auto &token: tokens.value()) {
         std::println("{} @ {}->{} ({})", token.to_string(), token.start,
                      token.end,
-                     module.source.substr(token.start, token.end - token.start));
+                     source.value().substr(token.start, token.end - token.start));
       }
     }
     return EXIT_SUCCESS;
   }
 
-  auto order = topo_sort_modules(modules);
-  if (!order.has_value()) {
-    print_error("", "", order.error());
+  project.rebuild(opts.files);
+  if (!project.diagnostics().empty()) {
+    for (const auto &diag: project.diagnostics())
+      report_project_diagnostic(opts, project, diag);
     return EXIT_FAILURE;
   }
-  order = prioritize_builtin_modules(order.value(), modules);
 
-  ModuleRegistry registry{};
+  const auto &modules = project.modules();
+  const auto &order = project.order();
+  const ModuleRegistry &registry = project.registry();
+
   std::set<std::string> print_targets{};
   for (const auto &file_path: opts.files)
-    print_targets.insert(abs_path_of(file_path));
+    print_targets.insert(project_abs_path(file_path));
 
-  for (const std::string &path: order.value()) {
-    ParsedModule &module = modules.at(path);
-
-    Checker checker(module.module_name, module.abs_path, &registry,
-                    module.is_runtime, opts.import_paths, opts.config);
-    ErrorOr<void> check = checker.check_decls(module.decls);
-    if (!check.has_value()) {
-      print_error(module.source, module.rel_path, check.error());
-      return EXIT_FAILURE;
-    }
-
-    registry.register_module(ModuleSymbols{
-        .name = module.module_name,
-        .path = module.rel_path,
-        .procs = checker.procs(),
-        .consts = checker.consts(),
-        .structs = checker.structs(),
-    });
+  for (const std::string &path: order) {
+    ParsedModule &module = const_cast<ParsedModule &>(modules.at(path));
 
     if (opts.print_ast) {
       if (print_targets.contains(path)) {
@@ -326,9 +153,17 @@ int main(int argc, char *argv[]) {
     if (opts.check_only)
       continue;
 
+    fs::path dir = cache_dir();
+    fs::path s_path = dir / module.rel_path;
+    s_path.replace_extension("S");
+
+    if (!opts.print_ast && !opts.check_only && !opts.print_ir &&
+        fs::exists(module.abs_path) && asm_up_to_date(s_path, module.abs_path))
+      continue;
+
     Generator gen(module.decls, module.module_name,
                   should_mangle_module(module.rel_path), &registry,
-                  checker.imports());
+                  project.imports_for(path), module.lambdas);
     gen.gen_decls();
 
     if (opts.print_ir) {
@@ -339,7 +174,7 @@ int main(int argc, char *argv[]) {
 
     auto codegen_target = target_for_codegen(opts.config);
     if (!codegen_target.has_value()) {
-      print_error("", "", codegen_target.error());
+      report_error(opts, "", "", codegen_target.error());
       return EXIT_FAILURE;
     }
     Target target = codegen_target.value();
@@ -348,36 +183,25 @@ int main(int argc, char *argv[]) {
         gen.builder().rodata()));
     emitter->emit();
 
-    fs::path dir = fs::current_path() / ".rye";
-    if (!fs::exists(dir))
-      fs::create_directory(dir);
-
-    fs::path out_path = dir / module.rel_path;
-    out_path = out_path.replace_extension("S");
-
-    if (!fs::exists(out_path.parent_path()))
-      fs::create_directory(out_path.parent_path());
-
-    std::ofstream out(out_path);
-    out.write(emitter->output().data(),
-              static_cast<std::streamsize>(emitter->output().size()));
-    out.close();
+    write_file_if_changed(s_path, emitter->output());
   }
 
-  if (opts.print_ast || opts.print_ir || opts.check_only)
+  if (opts.print_ast || opts.print_ir || opts.check_only) {
+    if (opts.diagnostics_json)
+      print_diagnostics_ok_json();
     return EXIT_SUCCESS;
+  }
 
   std::vector<std::string> object_files{};
-  for (const std::string &path: order.value()) {
+  for (const std::string &path: order) {
     const ParsedModule &module = modules.at(path);
-    fs::path dir = fs::current_path() / ".rye";
+    fs::path dir = cache_dir();
     fs::path out_path = dir / module.rel_path;
     fs::path s_path = out_path.replace_extension("S");
     out_path = out_path.replace_extension("o");
 
     object_files.push_back(out_path.string());
-    int status = exec_status("clang -c -o " + out_path.string() + " " +
-                             s_path.string());
+    int status = compile_object(out_path.string(), s_path.string());
     if (status != 0)
       return EXIT_FAILURE;
   }

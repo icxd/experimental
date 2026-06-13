@@ -1,0 +1,21 @@
+/// 12
+
+struct Point {
+  x, y, z int;
+}
+
+proc add(a, b int) int {
+  return a + b;
+}
+
+proc main() int {
+  var a int = 1, b int = 2, c int = 3;
+  var n int;
+  var p Point;
+  var sum int = a.add(b);
+  n = c;
+  p.x = 1;
+  p.y = 2;
+  p.z = 3;
+  return sum + n + p.x + p.y + p.z;
+}

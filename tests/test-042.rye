@@ -1,0 +1,15 @@
+/// 84
+
+struct Point {
+  x int;
+  y int;
+}
+
+proc sum(a Point, b Point) int {
+  return a.x + b.x + a.y + b.y;
+}
+
+proc main() int {
+  var p Point = Point{ x = 10, y = 32 };
+  return sum(p, p);
+}

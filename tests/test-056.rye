@@ -1,0 +1,10 @@
+/// 42
+
+proc values() (int, int) {
+  return (40, 2);
+}
+
+proc main() int {
+  var pair (int, int) = values();
+  return pair[0] + pair[1];
+}

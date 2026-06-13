@@ -59,9 +59,10 @@ ErrorOr<Decl *> Parser::parse_decl() {
     Token oparen = try$(expect(TOK_OPAREN, "Expected ( after identifier"));
     std::vector<Param> params{};
     while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
-      Token id = try$(expect(TOK_ID, "Expected an identifier"));
+      std::vector<Token> names = try$(parse_name_list());
       Type *type = try$(parse_type());
-      params.push_back(Param{id, type});
+      for (const Token &name: names)
+        params.push_back(Param{name, type});
 
       if (peek().type == TOK_COMMA)
         consume();
@@ -149,20 +150,20 @@ ErrorOr<Decl *> Parser::parse_decl() {
                                     .data = import_data});
   } else if (peek().type == TOK_STRUCT) {
     Token struct_ = try$(expect(TOK_STRUCT, "Expected `struct`"));
-    Token name = try$(expect(TOK_ID, "Expected struct name"));
+    Token struct_name = try$(expect(TOK_ID, "Expected struct name"));
     Token obrace = try$(expect(TOK_OBRACE, "Expected `{`"));
     std::vector<decl::StructField> fields{};
     while (_pos < _tokens.size() && peek().type != TOK_CBRACE) {
-      Token field_name =
-          try$(expect(TOK_ID, "Expected field name in struct"));
+      std::vector<Token> names = try$(parse_name_list());
       Type *field_type = try$(parse_type());
       try$(expect(TOK_SEMICOLON, "Expected `;` after struct field"));
-      fields.push_back(decl::StructField{field_name, field_type});
+      for (const Token &field_name: names)
+        fields.push_back(decl::StructField{field_name, field_type});
     }
     Token cbrace = try$(expect(TOK_CBRACE, "Expected `}`"));
 
     auto *struct_data = _arena.create<decl::Struct>(
-        decl::Struct{.name = name, .fields = fields});
+        decl::Struct{.name = struct_name, .fields = fields});
 
     return _arena.create<Decl>(Decl{.type = DECL_STRUCT,
                                     .start = struct_.start,
@@ -191,33 +192,70 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     });
   } else if (peek().type == TOK_VAR) {
     Token var = try$(expect(TOK_VAR, "Expected `var`"));
-    Token id = try$(expect(TOK_ID, "Expected an identifier after `var`"));
-    Type *type = try$(parse_type());
-    Token eq = try$(expect(TOK_EQ, "Expected = after type"));
-    Expr *value = try$(parse_expr());
-    Token semi = try$(expect(TOK_SEMICOLON, "Expected ; after value"));
+    std::vector<Stmt *> decls{};
+    while (true) {
+      Token id = try$(expect(TOK_ID, "Expected an identifier after `var`"));
+      Type *type = try$(parse_type());
+      std::optional<Expr *> value = std::nullopt;
+      if (peek().type == TOK_EQ) {
+        consume();
+        value = try$(parse_expr());
+      }
+
+      decls.push_back(_arena.create<Stmt>(Stmt{
+          .type = STMT_VAR,
+          .start = var.start,
+          .end = value.has_value() ? value.value()->end : type->end,
+          .data = _arena.create<stmt::Var>(stmt::Var{
+              .name = id,
+              .type = type,
+              .value = value,
+          }),
+      }));
+
+      if (peek().type == TOK_COMMA) {
+        consume();
+        continue;
+      }
+      break;
+    }
+    Token semi = try$(expect(TOK_SEMICOLON, "Expected ; after variable declaration"));
+
+    if (decls.size() == 1) {
+      decls.front()->end = semi.end;
+      return decls.front();
+    }
+
+    for (Stmt *stmt: decls)
+      stmt->end = semi.end;
+
     return _arena.create<Stmt>(Stmt{
-        .type = STMT_VAR,
+        .type = STMT_BLOCK,
         .start = var.start,
         .end = semi.end,
-        .data = _arena.create<stmt::Var>(stmt::Var{
-            .name = id,
-            .type = type,
-            .value = value,
-        }),
+        .data = _arena.create<stmt::Block>(stmt::Block{.stmts = decls}),
     });
-  } else if (peek().type == TOK_ID && peek(1).type == TOK_EQ) {
-    Token id = consume();
-    try$(expect(TOK_EQ, "Expected `=`"));
-    Expr *value = try$(parse_expr());
-    Token semi = try$(expect(TOK_SEMICOLON, "Expected `;` after assignment"));
-    return _arena.create<Stmt>(Stmt{
-        .type = STMT_ASSIGN,
-        .start = id.start,
-        .end = semi.end,
-        .data = _arena.create<stmt::Assign>(stmt::Assign{.name = id, .value = value}),
-    });
-  } else if (peek().type == TOK_WHILE) {
+  } else if (peek().type == TOK_ID || peek().type == TOK_OPAREN ||
+             peek().type == TOK_STAR) {
+    size_t save = _pos;
+    Expr *lhs = try$(parse_postfix_expr(false));
+    if (peek().type == TOK_EQ && lhs->is_lvalue()) {
+      consume();
+      Expr *value = try$(parse_expr());
+      Token semi =
+          try$(expect(TOK_SEMICOLON, "Expected `;` after assignment"));
+      return _arena.create<Stmt>(Stmt{
+          .type = STMT_ASSIGN,
+          .start = lhs->start,
+          .end = semi.end,
+          .data = _arena.create<stmt::Assign>(
+              stmt::Assign{.target = lhs, .value = value}),
+      });
+    }
+    _pos = save;
+  }
+
+  if (peek().type == TOK_WHILE) {
     Token while_ = try$(expect(TOK_WHILE, "Expected `while`"));
     Expr *cond = try$(parse_expr(0, false));
     std::vector<Stmt *> body = try$(parse_block());
@@ -241,8 +279,14 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     Expr *step_value = try$(parse_expr());
     if (peek().type == TOK_SEMICOLON)
       consume();
+    Expr *step_target = _arena.create<Expr>(Expr{
+        .type = EXPR_VAR,
+        .start = step_id.start,
+        .end = step_id.end,
+        .data = _arena.create<expr::Var>(expr::Var{.var = step_id}),
+    });
     auto *step_data = _arena.create<stmt::Assign>(
-        stmt::Assign{.name = step_id, .value = step_value});
+        stmt::Assign{.target = step_target, .value = step_value});
     Stmt *step = _arena.create<Stmt>(Stmt{
         .type = STMT_ASSIGN,
         .start = step_id.start,
@@ -330,6 +374,17 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
         .start = cont.start,
         .end = previous().end,
         .data = _arena.create<stmt::Continue>(stmt::Continue{}),
+    });
+  } else if (peek().type == TOK_ID || peek().type == TOK_OPAREN ||
+             peek().type == TOK_BANG || peek().type == TOK_STAR) {
+    Expr *expr = try$(parse_expr());
+    Token semi =
+        try$(expect(TOK_SEMICOLON, "Expected `;` after expression statement"));
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_EXPR,
+        .start = expr->start,
+        .end = semi.end,
+        .data = _arena.create<stmt::ExprStmt>(stmt::ExprStmt{.expr = expr}),
     });
   } else {
     return std::unexpected(
@@ -433,17 +488,82 @@ ErrorOr<Expr *> Parser::parse_expr(size_t min_prec, bool allow_struct_lit) {
 ErrorOr<Expr *> Parser::parse_postfix_expr(bool allow_struct_lit) {
   Expr *expr = try$(parse_primary_expr(allow_struct_lit));
 
-  while (peek().type == TOK_DOT) {
-    Token dot = consume();
-    Token field = try$(expect(TOK_ID, "Expected field name after `.`"));
-    auto *field_data =
-        _arena.create<expr::Field>(expr::Field{.base = expr, .field = field});
-    expr = _arena.create<Expr>(Expr{
-        .type = EXPR_FIELD,
-        .start = expr->start,
-        .end = field.end,
-        .data = field_data,
-    });
+  for (;;) {
+    if (peek().type == TOK_DOT) {
+      Token dot = consume();
+      Token field = try$(expect(TOK_ID, "Expected field name after `.`"));
+      if (peek().type == TOK_OPAREN) {
+        Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+        std::vector<Expr *> args{};
+        while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
+          args.push_back(try$(parse_expr(0, allow_struct_lit)));
+          if (peek().type == TOK_COMMA)
+            try$(expect(TOK_COMMA, "Expected `,` after argument"));
+          else
+            break;
+        }
+        Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
+        expr = _arena.create<Expr>(Expr{
+            .type = EXPR_CALL,
+            .start = expr->start,
+            .end = cparen.end,
+            .data = _arena.create<expr::Call>(expr::Call{
+                .name = field,
+                .arguments = args,
+                .receiver = expr,
+            }),
+        });
+        continue;
+      }
+
+      auto *field_data =
+          _arena.create<expr::Field>(expr::Field{.base = expr, .field = field});
+      expr = _arena.create<Expr>(Expr{
+          .type = EXPR_FIELD,
+          .start = expr->start,
+          .end = field.end,
+          .data = field_data,
+      });
+      continue;
+    }
+
+    if (peek().type == TOK_OBRACKET) {
+      consume();
+      Expr *index = try$(parse_expr(0, allow_struct_lit));
+      Token cbracket = try$(expect(TOK_CBRACKET, "Expected `]`"));
+      auto *index_data = _arena.create<expr::Index>(
+          expr::Index{.base = expr, .index = index});
+      expr = _arena.create<Expr>(Expr{
+          .type = EXPR_INDEX,
+          .start = expr->start,
+          .end = cbracket.end,
+          .data = index_data,
+      });
+      continue;
+    }
+
+    if (peek().type == TOK_OPAREN) {
+      Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+      std::vector<Expr *> args{};
+      while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
+        args.push_back(try$(parse_expr(0, allow_struct_lit)));
+        if (peek().type == TOK_COMMA)
+          try$(expect(TOK_COMMA, "Expected `,` after argument"));
+        else
+          break;
+      }
+      Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
+      expr = _arena.create<Expr>(Expr{
+          .type = EXPR_CALL,
+          .start = expr->start,
+          .end = cparen.end,
+          .data = _arena.create<expr::Call>(
+              expr::Call{.callee = expr, .arguments = args}),
+      });
+      continue;
+    }
+
+    break;
   }
 
   return expr;
@@ -452,17 +572,41 @@ ErrorOr<Expr *> Parser::parse_postfix_expr(bool allow_struct_lit) {
 ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
   if (peek().type == TOK_OPAREN) {
     Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
-    Expr *expr = try$(parse_expr(0, allow_struct_lit));
+    if (peek().type == TOK_CPAREN) {
+      return std::unexpected(
+          Error("Expected expression in parentheses", oparen.start, peek().end));
+    }
+    Expr *first = try$(parse_expr(0, allow_struct_lit));
+    if (peek().type == TOK_COMMA) {
+      std::vector<Expr *> elements{first};
+      while (peek().type == TOK_COMMA) {
+        consume();
+        if (peek().type == TOK_CPAREN) {
+          return std::unexpected(
+              Error("Expected expression after `,` in tuple", peek().start,
+                    peek().end));
+        }
+        elements.push_back(try$(parse_expr(0, allow_struct_lit)));
+      }
+      Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
+      return _arena.create<Expr>(Expr{
+          .type = EXPR_TUPLE,
+          .start = oparen.start,
+          .end = cparen.end,
+          .data = _arena.create<expr::TupleLit>(
+              expr::TupleLit{.elements = elements}),
+      });
+    }
     Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
     return _arena.create<Expr>(Expr{
         .type = EXPR_GROUP,
         .start = oparen.start,
         .end = cparen.end,
-        .data = _arena.create<expr::Group>(expr::Group{.expr = expr}),
+        .data = _arena.create<expr::Group>(expr::Group{.expr = first}),
     });
   } else if (peek().type == TOK_BANG) {
     Token bang = consume();
-    Expr *expr = try$(parse_primary_expr(allow_struct_lit));
+    Expr *expr = try$(parse_postfix_expr(allow_struct_lit));
     return _arena.create<Expr>(Expr{
         .type = EXPR_NOT,
         .start = bang.start,
@@ -488,6 +632,21 @@ ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
         .end = cparen.end,
         .data = _arena.create<expr::ComptimeCall>(
             expr::ComptimeCall{.name = name, .arguments = args}),
+    });
+  } else if (peek().type == TOK_PROC) {
+    Token proc = try$(expect(TOK_PROC, "Expected `proc`"));
+    auto sig = try$(parse_proc_signature());
+    Block body = try$(parse_block());
+    auto *lit_data = _arena.create<expr::ProcLit>(expr::ProcLit{
+        .params = std::move(sig.first),
+        .ret_type = sig.second,
+        .body = body,
+    });
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_PROC_LIT,
+        .start = proc.start,
+        .end = body.empty() ? sig.second->end : body.back()->end,
+        .data = lit_data,
     });
   } else if (peek().type == TOK_ID) {
     Token var = consume();
@@ -515,7 +674,7 @@ ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
         name = try$(expect(TOK_ID, "Expected procedure name after `:`"));
       }
 
-      if (peek().type == TOK_OPAREN) {
+      if (peek().type == TOK_OPAREN && module.has_value()) {
         Token oparen = try$(expect(TOK_OPAREN, "Expected ( after identifier"));
         std::vector<Expr *> args{};
         while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
@@ -569,6 +728,30 @@ ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
               expr::Var{.module = module, .var = name}),
       });
     }
+  } else if (peek().type == TOK_CAST) {
+    Token cast_ = try$(expect(TOK_CAST, "Expected `cast`"));
+    try$(expect(TOK_OPAREN, "Expected `(` after `cast`"));
+    Type *target = try$(parse_type());
+    Token cparen = try$(expect(TOK_CPAREN, "Expected `)` after cast type"));
+    Expr *value = try$(parse_postfix_expr(allow_struct_lit));
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_CAST,
+        .start = cast_.start,
+        .end = value->end,
+        .data = _arena.create<expr::Cast>(
+            expr::Cast{.target = target, .expr = value}),
+    });
+  } else if (peek().type == TOK_SIZEOF) {
+    Token sizeof_ = try$(expect(TOK_SIZEOF, "Expected `sizeof`"));
+    try$(expect(TOK_OPAREN, "Expected `(` after `sizeof`"));
+    Type *type = try$(parse_type());
+    Token cparen = try$(expect(TOK_CPAREN, "Expected `)` after type"));
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_SIZEOF,
+        .start = sizeof_.start,
+        .end = cparen.end,
+        .data = _arena.create<expr::Sizeof>(expr::Sizeof{.type = type}),
+    });
   } else if (peek().type == TOK_INT) {
     Token int_ = consume();
     return _arena.create<Expr>(Expr{
@@ -609,8 +792,68 @@ ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
   }
 }
 
+ErrorOr<std::pair<std::vector<Param>, Type *>> Parser::parse_proc_signature() {
+  Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+  std::vector<Param> params{};
+  while (_pos < _tokens.size() && peek().type != TOK_CPAREN) {
+    std::vector<Token> names = try$(parse_name_list());
+    Type *type = try$(parse_type());
+    for (const Token &name: names)
+      params.push_back(Param{name, type});
+
+    if (peek().type == TOK_COMMA)
+      consume();
+    else
+      break;
+  }
+  Token cparen = try$(expect(TOK_CPAREN, "Expected `)` after parameters"));
+  Type *ret_type = try$(parse_type());
+  return std::make_pair(std::move(params), ret_type);
+}
+
 ErrorOr<Type *> Parser::parse_type() {
-  if (peek().type == TOK_ID) {
+  if (peek().type == TOK_OPAREN) {
+    Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+    if (peek().type == TOK_CPAREN) {
+      return std::unexpected(
+          Error("Expected type in parentheses", oparen.start, peek().end));
+    }
+    Type *first = try$(parse_type());
+    if (peek().type == TOK_COMMA) {
+      std::vector<Type *> elements{first};
+      while (peek().type == TOK_COMMA) {
+        consume();
+        if (peek().type == TOK_CPAREN) {
+          return std::unexpected(
+              Error("Expected type after `,` in tuple type", peek().start,
+                    peek().end));
+        }
+        elements.push_back(try$(parse_type()));
+      }
+      Token cparen = try$(expect(TOK_CPAREN, "Expected `)`"));
+      return _arena.create<Type>(Type{
+          .type = TYPE_TUPLE,
+          .start = oparen.start,
+          .end = cparen.end,
+          .data = _arena.create<type::Tuple>(
+              type::Tuple{.elements = elements}),
+      });
+    }
+    return first;
+  } else if (peek().type == TOK_PROC) {
+    Token proc = try$(expect(TOK_PROC, "Expected `proc`"));
+    auto sig = try$(parse_proc_signature());
+    auto *proc_data = _arena.create<type::Proc>(type::Proc{
+        .params = sig.first,
+        .ret_type = sig.second,
+    });
+    return _arena.create<Type>(Type{
+        .type = TYPE_PROC,
+        .start = proc.start,
+        .end = sig.second->end,
+        .data = proc_data,
+    });
+  } else if (peek().type == TOK_ID) {
     if (peek().id_value == "bool") {
       Token bool_ = consume();
       return _arena.create<Type>(Type{
@@ -702,3 +945,15 @@ Token Parser::consume() {
 Token Parser::peek(size_t offset) { return _tokens.at(_pos + offset); }
 
 Token Parser::previous() { return _tokens.at(_pos - 1); }
+
+ErrorOr<std::vector<Token>> Parser::parse_name_list() {
+  std::vector<Token> names{};
+  names.push_back(try$(expect(TOK_ID, "Expected an identifier")));
+
+  while (peek().type == TOK_COMMA) {
+    consume();
+    names.push_back(try$(expect(TOK_ID, "Expected an identifier")));
+  }
+
+  return names;
+}

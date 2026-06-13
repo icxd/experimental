@@ -62,6 +62,10 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_IMPORT;
     else if (id == "struct")
       type = TOK_STRUCT;
+    else if (id == "sizeof")
+      type = TOK_SIZEOF;
+    else if (id == "cast")
+      type = TOK_CAST;
 
     return Token{
         .type = type,
@@ -109,6 +113,8 @@ ErrorOr<Token> Lexer::next_token() {
   switch (peek()) {
   case '(': return single_char_token(TOK_OPAREN);
   case ')': return single_char_token(TOK_CPAREN);
+  case '[': return single_char_token(TOK_OBRACKET);
+  case ']': return single_char_token(TOK_CBRACKET);
   case '{': return single_char_token(TOK_OBRACE);
   case '}': return single_char_token(TOK_CBRACE);
   case ',': return single_char_token(TOK_COMMA);
@@ -116,7 +122,16 @@ ErrorOr<Token> Lexer::next_token() {
   case '+': return single_char_token(TOK_PLUS);
   case '-': return single_char_token(TOK_MINUS);
   case '*': return single_char_token(TOK_STAR);
-  case '/': return single_char_token(TOK_SLASH);
+  case '/':
+    if (_pos + 1 < _source.size() && peek(1) == '/') {
+      _pos += 2;
+      while (_pos < _source.size() && peek() != '\n')
+        _pos++;
+      if (_pos < _source.size())
+        _pos++;
+      return next_token();
+    }
+    return single_char_token(TOK_SLASH);
   case '=': return double_char_token('=', TOK_EQEQ, TOK_EQ);
   case '!': return double_char_token('=', TOK_NEQ, TOK_BANG);
   case '<': return double_char_token('=', TOK_LTE, TOK_LT);

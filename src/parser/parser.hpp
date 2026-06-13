@@ -19,6 +19,8 @@ private:
   ErrorOr<Expr *> parse_postfix_expr(bool allow_struct_lit = true);
   ErrorOr<Expr *> parse_primary_expr(bool allow_struct_lit = true);
   ErrorOr<Type *> parse_type();
+  ErrorOr<std::pair<std::vector<Param>, Type *>> parse_proc_signature();
+  ErrorOr<std::vector<Token>> parse_name_list();
 
   ErrorOr<Stmt *> parse_block_stmt();
   ErrorOr<std::vector<Stmt *>> parse_block();

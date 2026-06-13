@@ -1,0 +1,13 @@
+/// 17
+
+proc add(a, b int) int {
+  return a + b;
+}
+
+proc main() int {
+  var f proc(a, b int) int = &add;
+  var g proc(x int) int = proc(x int) int {
+    return x * 2;
+  };
+  return f(3, 4) + g(5);
+}

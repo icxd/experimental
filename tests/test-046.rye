@@ -1,0 +1,13 @@
+/// 42
+
+import "std/arena.rye";
+
+proc main() int {
+  var arena Arena = Arena{ data = 0, capacity = 0, offset = 0 };
+  init(&arena, 64);
+  var a *byte = arena.bump(16);
+  var b *byte = arena.bump(16);
+  arena.reset();
+  arena.destroy();
+  return 42;
+}

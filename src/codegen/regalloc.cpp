@@ -46,6 +46,15 @@ compute_live_ranges(const std::vector<Instruction> &instructions) {
     }
   }
 
+  for (int i = 0; i < static_cast<int>(instructions.size()); ++i) {
+    if (instructions[i].opcode != OP_CALL)
+      continue;
+    for (auto &[_, range]: ranges) {
+      if (range.start <= i && range.end > i)
+        range.crosses_call = true;
+    }
+  }
+
   return ranges;
 }
 
@@ -80,6 +89,13 @@ void linear_scan_allocate(std::vector<LiveRange> &ranges,
       } else {
         ++it;
       }
+    }
+
+    if (range.crosses_call) {
+      range.spilled = true;
+      range.assigned_register = "";
+      active.push_back(&range);
+      continue;
     }
 
     if (!free_regs.empty()) {

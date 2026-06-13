@@ -1,0 +1,15 @@
+/// 42
+
+struct Point {
+  x int;
+  y int;
+}
+
+proc sum(p Point) int {
+  return p.x + p.y;
+}
+
+proc main() int {
+  var p Point = Point{ x = 40, y = 2 };
+  return p.sum();
+}

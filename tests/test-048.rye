@@ -1,0 +1,12 @@
+/// 3
+
+import "std/alloc.rye";
+
+proc main() int {
+  var buf *byte = alloc(4);
+  buf[0] = cast(byte) 1;
+  buf[1] = cast(byte) 2;
+  var sum int = cast(int) buf[0] + cast(int) buf[1];
+  dealloc(buf);
+  return sum;
+}

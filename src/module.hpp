@@ -16,6 +16,10 @@ inline std::string module_name_from_path(const fs::path &path) {
   return path.stem().string();
 }
 
+inline bool is_test_entry_module(std::string_view path) {
+  return path.starts_with("tests/test-") && path.ends_with(".rye");
+}
+
 inline bool is_runtime_module(const std::string &path) {
   fs::path p(path);
   return p.filename() == "ryert.rye";

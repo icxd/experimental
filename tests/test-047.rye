@@ -1,0 +1,12 @@
+/// 16
+
+import "std/alloc.rye";
+
+struct Widget {
+  id int;
+  flags int;
+}
+
+proc main() int {
+  return sizeof(Widget);
+}
