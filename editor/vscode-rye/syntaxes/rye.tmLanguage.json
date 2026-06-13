@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Rye",
+  "scopeName": "source.rye",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#function-calls" },
+    { "include": "#pascal-case" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "name": "comment.line.double-slash",
+      "match": "//.*$"
+    },
+    "strings": {
+      "name": "string.quoted.double",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "function-calls": {
+      "patterns": [
+        {
+          "match": "(?<=\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "entity.name.function" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function" }
+          }
+        }
+      ]
+    },
+    "pascal-case": {
+      "name": "entity.name.type",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "keywords": {
+      "name": "keyword",
+      "match": "\\b(proc|struct|var|const|import|extern|comptime|sizeof|cast|if|else|for|while|break|continue|return|when)\\b"
+    },
+    "types": {
+      "name": "support.type",
+      "match": "\\b(void|bool|int|byte)\\b"
+    },
+    "constants": {
+      "name": "constant.language",
+      "match": "\\b(true|false)\\b"
+    },
+    "numbers": {
+      "name": "constant.numeric",
+      "match": "\\b[0-9]+\\b"
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator",
+          "match": "&&|\\|\\||!|==|!=|<=|>=|<|>|\\+|-|\\*|/|&|\\*|="
+        }
+      ]
+    }
+  }
+}

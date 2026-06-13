@@ -1,0 +1,67 @@
+{
+  "Procedure": {
+    "prefix": "proc",
+    "body": [
+      "proc ${1:name}($2) ${3:int} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Procedure declaration"
+  },
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "proc main() int {",
+      "\t$0",
+      "\treturn 0;",
+      "}"
+    ],
+    "description": "Main entry point"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t${2:field} ${3:int};",
+      "}"
+    ],
+    "description": "Struct declaration"
+  },
+  "Var": {
+    "prefix": "var",
+    "body": "var ${1:name} ${2:int} = ${3:0};",
+    "description": "Variable declaration"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": "import \"${1:std/alloc.rye}\";",
+    "description": "Import statement"
+  },
+  "For": {
+    "prefix": "for",
+    "body": [
+      "for var ${1:i} int = 0; ${1:i} < ${2:n}; ${1:i} = ${1:i} + 1 {",
+      "\t$0",
+      "}"
+    ],
+    "description": "For loop"
+  },
+  "While": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If statement"
+  }
+}

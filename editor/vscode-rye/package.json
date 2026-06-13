@@ -1,0 +1,85 @@
+{
+  "name": "rye",
+  "displayName": "Rye",
+  "description": "Syntax highlighting, diagnostics, and language server for Rye",
+  "version": "0.3.1",
+  "publisher": "rye-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "activationEvents": [
+    "onLanguage:rye",
+    "workspaceContains:**/*.rye"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "rye.restartLanguageServer",
+        "title": "Rye: Restart Language Server",
+        "category": "Rye"
+      },
+      {
+        "command": "rye.showOutput",
+        "title": "Rye: Show Output",
+        "category": "Rye"
+      }
+    ],
+    "languages": [
+      {
+        "id": "rye",
+        "aliases": [
+          "Rye",
+          "rye"
+        ],
+        "extensions": [
+          ".rye"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rye",
+        "scopeName": "source.rye",
+        "path": "./syntaxes/rye.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Rye",
+      "properties": {
+        "rye.compilerPath": {
+          "type": "string",
+          "default": "rye",
+          "description": "Path to the rye compiler executable."
+        },
+        "rye.importPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional import search paths passed to the language server."
+        },
+        "rye.lspDebug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log LSP JSON traffic to the Rye output panel (sets RYE_LSP_DEBUG)."
+        }
+      }
+    },
+    "snippets": [
+      {
+        "language": "rye",
+        "path": "./snippets/rye.json"
+      }
+    ]
+  }
+}

@@ -24,6 +24,34 @@ python3 run_tests.py
 
 Each test file starts with `/// <exit_code>` — the expected process exit code.
 
+## Editor support (VS Code / Cursor)
+
+The repo includes a VS Code extension at `editor/vscode-rye/` (works in Cursor too). It provides:
+
+- Syntax highlighting for `.rye` files
+- Bracket/comment configuration and snippets
+- **Language server** (`rye lsp`) with diagnostics, document symbols, hover, go-to-definition, completion, and signature help
+
+### Quick setup (development)
+
+1. Build the compiler (`cmake --build build --target rye`).
+2. Open this repository as the workspace root (`.vscode/settings.json` points `rye.compilerPath` at `build/rye`).
+3. Install extension dependencies and load the extension:
+   ```bash
+   cd editor/vscode-rye && npm install --omit=dev
+   ```
+   Then in **VS Code / Cursor:** Extensions → `...` → **Load Extension…** → select `editor/vscode-rye/`.
+   Or package with `editor/package-extension.sh` and install the `.vsix`.
+
+### Extension settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `rye.compilerPath` | `rye` | Path to the `rye` binary (also used to launch `rye lsp`) |
+| `rye.importPaths` | `[]` | Extra import search paths (workspace root is added automatically) |
+
+Use **Rye: Restart Language Server** from the command palette if the server needs a fresh start after rebuilding the compiler.
+
 ## Compiling a program
 
 ```bash
