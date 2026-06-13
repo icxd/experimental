@@ -1,0 +1,37 @@
+---
+description: Commit frequently after implementation work; push only when asked
+alwaysApply: true
+---
+
+# Commit and push policy
+
+## Commits — frequent and small
+
+After completing any implementation work that changes tracked files:
+
+1. Run `git status` and `git diff` to see what changed.
+2. Create one or more **focused commits** — each commit should be a single logical unit (one fix, one feature slice, one test addition).
+3. Prefer **many small commits** over one large commit. Split unrelated changes.
+4. Write imperative subject lines; 1–2 sentences explaining why.
+5. Run tests when the change affects behavior (`python3 run_tests.py` for compiler/stdlib changes).
+6. Do **not** push unless the user explicitly asks.
+
+Skip commits when:
+- The turn was question-only or review-only with no file changes.
+- Changes are clearly WIP scratch the user would not want committed.
+
+## Pushes — rare, milestone-sized
+
+A push represents a **major change**: a feature branch or milestone that is usually **many small commits** deep.
+
+- Never push unless the user explicitly requests it.
+- When asked to push, push the accumulated commits — do not squash unless asked.
+- Warn before force-pushing to main/master.
+
+## Examples
+
+| Work done | Action |
+|-----------|--------|
+| Fix a typo in one test | One commit |
+| Add tuple indexing + tests | 2 commits (implementation, tests) if separable |
+| Finish a feature over several tasks | Several commits across the session; push when user says so |
