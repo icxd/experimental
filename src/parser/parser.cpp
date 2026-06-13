@@ -186,26 +186,40 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     return parse_block_stmt();
   else if (peek().type == TOK_VAR) {
     Token var = try$(expect(TOK_VAR, "Expected `var`"));
+
+    if (peek().type == TOK_OPAREN) {
+      Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+      return parse_var_destructure(var, oparen);
+    }
+
     std::vector<Stmt *> decls{};
     while (true) {
       Token id = try$(expect(TOK_ID, "Expected an identifier after `var`"));
-      Type *type = try$(parse_type());
+      Type *type = nullptr;
       std::optional<Expr *> value = std::nullopt;
+
       if (peek().type == TOK_EQ) {
         consume();
         value = try$(parse_expr());
+      } else {
+        type = try$(parse_type());
+        if (peek().type == TOK_EQ) {
+          consume();
+          value = try$(parse_expr());
+        }
       }
 
-      decls.push_back(_arena.create<Stmt>(Stmt{
-          .type = STMT_VAR,
-          .start = var.start,
-          .end = value.has_value() ? value.value()->end : type->end,
-          .data = _arena.create<stmt::Var>(stmt::Var{
-              .name = id,
-              .type = type,
-              .value = value,
-          }),
-      }));
+      if (type == nullptr && !value.has_value()) {
+        return std::unexpected(
+            Error("Variable declaration requires a type or initializer", id.start,
+                  id.end));
+      }
+
+      decls.push_back(make_var_stmt(
+          var.start,
+          value.has_value() ? value.value()->end
+                            : (type != nullptr ? type->end : id.end),
+          id, type, value));
 
       if (peek().type == TOK_COMMA) {
         consume();
@@ -950,4 +964,98 @@ ErrorOr<std::vector<Token>> Parser::parse_name_list() {
   }
 
   return names;
+}
+
+Token Parser::synthetic_id(std::string name, size_t start, size_t end) {
+  char *storage = static_cast<char *>(_arena.allocate(name.size() + 1));
+  std::memcpy(storage, name.data(), name.size());
+  storage[name.size()] = '\0';
+  return Token{.type = TOK_ID,
+               .start = start,
+               .end = end,
+               .id_value = std::string_view(storage, name.size())};
+}
+
+Expr *Parser::make_var_expr(Token name) {
+  return _arena.create<Expr>(Expr{
+      .type = EXPR_VAR,
+      .start = name.start,
+      .end = name.end,
+      .data = _arena.create<expr::Var>(expr::Var{.var = name}),
+  });
+}
+
+Expr *Parser::make_int_expr(int64_t value, size_t start, size_t end) {
+  return _arena.create<Expr>(Expr{
+      .type = EXPR_INT,
+      .start = start,
+      .end = end,
+      .data = _arena.create<expr::Int>(expr::Int{.value = value}),
+  });
+}
+
+Expr *Parser::make_index_expr(Expr *base, int64_t idx, size_t start,
+                              size_t end) {
+  Expr *index = make_int_expr(idx, start, end);
+  return _arena.create<Expr>(Expr{
+      .type = EXPR_INDEX,
+      .start = start,
+      .end = end,
+      .data = _arena.create<expr::Index>(
+          expr::Index{.base = base, .index = index}),
+  });
+}
+
+Stmt *Parser::make_var_stmt(size_t start, size_t end, Token name, Type *type,
+                            std::optional<Expr *> value) {
+  return _arena.create<Stmt>(Stmt{
+      .type = STMT_VAR,
+      .start = start,
+      .end = end,
+      .data = _arena.create<stmt::Var>(
+          stmt::Var{.name = name, .type = type, .value = value}),
+  });
+}
+
+ErrorOr<Stmt *> Parser::parse_var_destructure(Token var, Token oparen) {
+  std::vector<Token> names = try$(parse_name_list());
+  if (names.empty()) {
+    return std::unexpected(
+        Error("Expected at least one name in destructure pattern", oparen.start,
+              oparen.end));
+  }
+
+  try$(expect(TOK_CPAREN, "Expected `)`"));
+  try$(expect(TOK_EQ, "Expected `=` after destructure pattern"));
+  Expr *rhs = try$(parse_expr());
+  Token semi =
+      try$(expect(TOK_SEMICOLON, "Expected `;` after variable declaration"));
+
+  Token tmp = synthetic_id(
+      std::format("__dtmp{}", _destructure_tmp++), var.start, rhs->end);
+  std::vector<Stmt *> stmts{};
+  stmts.push_back(make_var_stmt(var.start, semi.end, tmp, nullptr, rhs));
+
+  Expr *base = make_var_expr(tmp);
+  for (size_t i = 0; i < names.size(); i++) {
+    if (names[i].id_value == "_")
+      continue;
+    Expr *elem =
+        make_index_expr(base, static_cast<int64_t>(i), names[i].start, semi.end);
+    stmts.push_back(
+        make_var_stmt(names[i].start, semi.end, names[i], nullptr, elem));
+  }
+
+  if (stmts.size() == 1) {
+    return std::unexpected(Error(
+        "Destructure pattern must bind at least one variable", oparen.start,
+        semi.end));
+  }
+
+  return _arena.create<Stmt>(Stmt{
+      .type = STMT_BLOCK,
+      .start = var.start,
+      .end = semi.end,
+      .data = _arena.create<stmt::Block>(stmt::Block{.stmts = stmts}),
+  });
 }

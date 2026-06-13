@@ -87,7 +87,7 @@ namespace stmt {
 
   struct Var {
     Token name;
-    Type *type;
+    Type *type = nullptr; // nullptr = infer from initializer
     std::optional<Expr *> value = std::nullopt;
   };
 

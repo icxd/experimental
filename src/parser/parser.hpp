@@ -24,6 +24,13 @@ private:
 
   ErrorOr<Stmt *> parse_block_stmt();
   ErrorOr<std::vector<Stmt *>> parse_block();
+  ErrorOr<Stmt *> parse_var_destructure(Token var, Token oparen);
+  Stmt *make_var_stmt(size_t start, size_t end, Token name, Type *type,
+                      std::optional<Expr *> value);
+  Token synthetic_id(std::string name, size_t start, size_t end);
+  Expr *make_var_expr(Token name);
+  Expr *make_int_expr(int64_t value, size_t start, size_t end);
+  Expr *make_index_expr(Expr *base, int64_t idx, size_t start, size_t end);
 
   ErrorOr<Token> expect(TokenType type, std::string message);
   Token consume();
@@ -34,4 +41,5 @@ private:
   std::vector<Token> _tokens;
   size_t _pos = 0;
   Arena &_arena;
+  size_t _destructure_tmp = 0;
 };

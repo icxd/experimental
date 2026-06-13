@@ -685,31 +685,45 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     stmt::Var *var = std::get<stmt::Var *>(stmt->data);
 
     std::string_view name = var->name.id_value;
-    Type *type = try$(check_type(var->type, scope));
+    Type *type = nullptr;
 
-    if (var->value.has_value()) {
-      Type *expr_type = try$(check_expr(var->value.value(), scope));
-
-      if (!type_eq(type, expr_type)) {
-        if (type->type == TYPE_BYTE && expr_type->type == TYPE_INT &&
-            var->value.value()->type == EXPR_INT) {
-          int64_t value =
-              std::get<expr::Int *>(var->value.value()->data)->value;
-          if (value < 0 || value > 255) {
-            return std::unexpected(
-                Error("Byte literal out of range", var->value.value()->start,
-                      var->value.value()->end)
-                    .with_hint("Expected a value between 0 and 255"));
-          }
-          expr_type = type;
-        } else {
-          return std::unexpected(type_mismatch_error(
-              "Type mismatch in initializer", type, expr_type,
-              var->value.value()));
-        }
+    if (var->type == nullptr) {
+      if (!var->value.has_value()) {
+        return std::unexpected(
+            Error("Cannot infer variable type without an initializer", var->name.start,
+                  var->name.end));
       }
-
+      type = try$(check_expr(var->value.value(), scope));
+      var->type = type;
       var->value.value()->expr_type = type;
+    } else {
+      type = try$(check_type(var->type, scope));
+      var->type = type;
+
+      if (var->value.has_value()) {
+        Type *expr_type = try$(check_expr(var->value.value(), scope));
+
+        if (!type_eq(type, expr_type)) {
+          if (type->type == TYPE_BYTE && expr_type->type == TYPE_INT &&
+              var->value.value()->type == EXPR_INT) {
+            int64_t value =
+                std::get<expr::Int *>(var->value.value()->data)->value;
+            if (value < 0 || value > 255) {
+              return std::unexpected(
+                  Error("Byte literal out of range", var->value.value()->start,
+                        var->value.value()->end)
+                      .with_hint("Expected a value between 0 and 255"));
+            }
+            expr_type = type;
+          } else {
+            return std::unexpected(type_mismatch_error(
+                "Type mismatch in initializer", type, expr_type,
+                var->value.value()));
+          }
+        }
+
+        var->value.value()->expr_type = type;
+      }
     }
 
     scope->vars.insert({name, type});
@@ -1695,6 +1709,11 @@ Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
     switch (stmt->type) {
     case STMT_VAR: {
       auto var = std::get<stmt::Var *>(stmt->data);
+      if (var->type == nullptr) {
+        return std::unexpected(
+            Error("Comptime variables must have an explicit type", stmt->start,
+                  stmt->end));
+      }
       Type *type = try$(check_type(var->type, scope));
       if (type->type != TYPE_INT && type->type != TYPE_BOOL) {
         return std::unexpected(

@@ -1,0 +1,7 @@
+/// 42
+
+proc main() int {
+  var x = 40;
+  var y = 2;
+  return x + y;
+}

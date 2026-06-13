@@ -220,7 +220,8 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
   case STMT_VAR: {
     auto var = std::get<stmt::Var *>(stmt->data);
     out << " \033[34m" << var->name.id_value << "\033[0m ";
-    print_type(out, var->type);
+    if (var->type != nullptr)
+      print_type(out, var->type);
     if (var->value.has_value()) {
       out << "\n";
       print_expr(out, var->value.value(), indent.next(true));

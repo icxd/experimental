@@ -840,7 +840,8 @@ void collect_refs_in_stmts(const std::vector<Stmt *> &stmts,
     switch (stmt->type) {
     case STMT_VAR: {
       auto *var = std::get<stmt::Var *>(stmt->data);
-      collect_refs_in_type(var->type, mod, sym, out);
+      if (var->type != nullptr)
+        collect_refs_in_type(var->type, mod, sym, out);
       if (var->value.has_value())
         collect_refs_in_expr(var->value.value(), mod, sym, current_proc, out);
       break;
@@ -879,7 +880,8 @@ void collect_refs_in_stmts(const std::vector<Stmt *> &stmts,
       if (loop->init != nullptr) {
         if (loop->init->type == STMT_VAR) {
           auto *var = std::get<stmt::Var *>(loop->init->data);
-          collect_refs_in_type(var->type, mod, sym, out);
+          if (var->type != nullptr)
+            collect_refs_in_type(var->type, mod, sym, out);
           if (var->value.has_value())
         collect_refs_in_expr(var->value.value(), mod, sym, current_proc, out);
         } else if (loop->init->type == STMT_ASSIGN) {
@@ -1144,7 +1146,8 @@ void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
       auto *var = std::get<stmt::Var *>(stmt->data);
       add_sem_token(out, var->name.start, var->name.end, SEM_VARIABLE,
                     MOD_DECLARATION);
-      collect_sem_tokens_in_type(var->type, out);
+      if (var->type != nullptr)
+        collect_sem_tokens_in_type(var->type, out);
       if (var->value.has_value())
         collect_sem_tokens_in_expr(var->value.value(), out);
       break;
@@ -1589,7 +1592,7 @@ IdeService::completion(std::string_view abs_path, size_t line,
           continue;
         add_unique(CompletionItem{
             .label = label,
-            .detail = type_to_string(var->type),
+            .detail = var->type != nullptr ? type_to_string(var->type) : "",
             .insert_text = label,
             .kind = 6,
         });
