@@ -182,15 +182,9 @@ ErrorOr<Decl *> Parser::parse_decl() {
 }
 
 ErrorOr<Stmt *> Parser::parse_stmt() {
-  if (peek().type == TOK_OBRACE) {
-    std::vector<Stmt *> stmts = try$(parse_block());
-    return _arena.create<Stmt>(Stmt{
-        .type = STMT_BLOCK,
-        .start = stmts.front()->start,
-        .end = stmts.back()->end,
-        .data = _arena.create<stmt::Block>(stmt::Block{.stmts = stmts}),
-    });
-  } else if (peek().type == TOK_VAR) {
+  if (peek().type == TOK_OBRACE)
+    return parse_block_stmt();
+  else if (peek().type == TOK_VAR) {
     Token var = try$(expect(TOK_VAR, "Expected `var`"));
     std::vector<Stmt *> decls{};
     while (true) {
