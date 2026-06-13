@@ -11,6 +11,12 @@ let output;
 /** @type {vscode.ExtensionContext | undefined} */
 let extensionContext;
 
+/** @type {Promise<void> | undefined} */
+let startInFlight;
+
+/** @type {boolean} */
+let disposeHookRegistered = false;
+
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   output?.appendLine(line);
@@ -81,92 +87,139 @@ function buildImportPaths(config, workspaceFolder) {
 }
 
 /**
+ * @param {import("vscode-languageclient/node").LanguageClient} languageClient
+ */
+function bindOutputChannel(languageClient) {
+  output = languageClient.outputChannel;
+}
+
+/**
+ * @param {vscode.ExtensionContext} context
+ */
+function ensureDisposeHook(context) {
+  if (disposeHookRegistered) return;
+  disposeHookRegistered = true;
+  context.subscriptions.push({
+    dispose: () => {
+      void stopLanguageClient();
+    },
+  });
+}
+
+async function stopLanguageClient() {
+  if (!client) return;
+
+  const stopping = client;
+  client = undefined;
+
+  try {
+    await stopping.stop();
+    log("Language server stopped.");
+  } catch (error) {
+    log(`Language server stop failed: ${error}`);
+  }
+}
+
+/**
  * @param {vscode.ExtensionContext} context
  */
 async function startLanguageClient(context) {
-  let LanguageClient;
-  let TransportKind;
-
-  try {
-    ({ LanguageClient, TransportKind } = require("vscode-languageclient/node"));
-  } catch (error) {
-    const message =
-      "Failed to load vscode-languageclient. Run `npm install --omit=dev` in editor/vscode-rye, then reload the window.";
-    log(message);
-    log(String(error));
-    void vscode.window.showErrorMessage(`Rye: ${message}`);
+  if (startInFlight) {
+    await startInFlight;
     return;
   }
 
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  const config = vscode.workspace.getConfiguration("rye", workspaceFolder?.uri);
+  startInFlight = (async () => {
+    let LanguageClient;
+    let TransportKind;
 
-  const serverPath = resolveRyePath(config, workspaceFolder);
-  if (!fs.existsSync(serverPath)) {
-    const message = `Rye compiler not found at: ${serverPath}`;
-    log(message);
-    void vscode.window.showErrorMessage(
-      `${message}. Build with: cmake --build build --target rye`
-    );
-    return;
-  }
+    try {
+      ({ LanguageClient, TransportKind } = require("vscode-languageclient/node"));
+    } catch (error) {
+      const message =
+        "Failed to load vscode-languageclient. Run `npm install --omit=dev` in editor/vscode-rye, then reload the window.";
+      log(message);
+      log(String(error));
+      void vscode.window.showErrorMessage(`Rye: ${message}`);
+      return;
+    }
 
-  const importPaths = buildImportPaths(config, workspaceFolder);
-  const workspacePath = workspaceFolder?.uri.fsPath ?? "";
-  const cwd = workspacePath || path.dirname(serverPath);
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const config = vscode.workspace.getConfiguration("rye", workspaceFolder?.uri);
 
-  log(`Starting language server: ${serverPath} lsp`);
-  log(`Working directory: ${cwd}`);
-  log(`Import paths: ${importPaths.join(", ") || "(none)"}`);
-  log(`LSP traffic log: ${path.join(cwd, ".rye", "lsp-traffic.log")}`);
+    const serverPath = resolveRyePath(config, workspaceFolder);
+    if (!fs.existsSync(serverPath)) {
+      const message = `Rye compiler not found at: ${serverPath}`;
+      log(message);
+      void vscode.window.showErrorMessage(
+        `${message}. Build with: cmake --build build --target rye`
+      );
+      return;
+    }
 
-  const serverOptions = {
-    command: serverPath,
-    args: ["lsp"],
-    transport: TransportKind.stdio,
-    options: {
-      cwd,
-      env: {
-        ...process.env,
-        ...(config.get("lspDebug", false) ? { RYE_LSP_DEBUG: "1" } : {}),
+    await stopLanguageClient();
+
+    const importPaths = buildImportPaths(config, workspaceFolder);
+    const workspacePath = workspaceFolder?.uri.fsPath ?? "";
+    const cwd = workspacePath || path.dirname(serverPath);
+
+    log(`Starting language server: ${serverPath} lsp`);
+    log(`Working directory: ${cwd}`);
+    log(`Import paths: ${importPaths.join(", ") || "(none)"}`);
+    log(`LSP traffic log: ${path.join(cwd, ".rye", "lsp-traffic.log")}`);
+
+    const serverOptions = {
+      command: serverPath,
+      args: ["lsp"],
+      transport: TransportKind.stdio,
+      options: {
+        cwd,
+        env: {
+          ...process.env,
+          ...(config.get("lspDebug", false) ? { RYE_LSP_DEBUG: "1" } : {}),
+        },
       },
-    },
-  };
+    };
 
-  const clientOptions = {
-    documentSelector: [{ language: "rye", scheme: "file" }],
-    initializationOptions: {
-      importPaths,
-      workspaceRoot: workspacePath || cwd,
-    },
-    outputChannel: output,
-    synchronize: {
-      configurationSection: "rye",
-    },
-  };
+    const clientOptions = {
+      documentSelector: [{ language: "rye", scheme: "file" }],
+      initializationOptions: {
+        importPaths,
+        workspaceRoot: workspacePath || cwd,
+      },
+      outputChannelName: "Rye",
+      synchronize: {
+        configurationSection: "rye",
+      },
+    };
 
-  if (client) {
-    await client.stop();
-    client = undefined;
-  }
+    const newClient = new LanguageClient(
+      "rye",
+      "Rye Language Server",
+      serverOptions,
+      clientOptions
+    );
 
-  client = new LanguageClient(
-    "rye",
-    "Rye Language Server",
-    serverOptions,
-    clientOptions
-  );
+    client = newClient;
+    bindOutputChannel(newClient);
+    ensureDisposeHook(context);
 
-  context.subscriptions.push(client);
+    try {
+      await newClient.start();
+      log("Language server started.");
+    } catch (error) {
+      client = undefined;
+      log(`Failed to start language server: ${error}`);
+      void vscode.window.showErrorMessage(
+        `Rye: failed to start language server. See Output → Rye for details.`
+      );
+    }
+  })();
 
   try {
-    await client.start();
-    log("Language server started.");
-  } catch (error) {
-    log(`Failed to start language server: ${error}`);
-    void vscode.window.showErrorMessage(
-      `Rye: failed to start language server. See Output → Rye for details.`
-    );
+    await startInFlight;
+  } finally {
+    startInFlight = undefined;
   }
 }
 
@@ -202,10 +255,7 @@ function activate(context) {
 
 async function deactivate() {
   log("Rye extension deactivating.");
-  if (client) {
-    await client.stop();
-    client = undefined;
-  }
+  await stopLanguageClient();
 }
 
 module.exports = { activate, deactivate };

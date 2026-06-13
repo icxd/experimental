@@ -2,7 +2,7 @@
   "name": "rye",
   "displayName": "Rye",
   "description": "Syntax highlighting, diagnostics, and language server for Rye",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "rye-lang",
   "license": "MIT",
   "engines": {
