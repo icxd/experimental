@@ -7,6 +7,24 @@ struct IntList {
   len, cap int;
 }
 
+proc iter(l *IntList) IntListIter {
+  return IntListIter{ list = l, index = 0 };
+}
+
+struct IntListIter {
+  list *IntList;
+  index int;
+}
+
+proc next(i *IntListIter) (bool, int) {
+  if i.index >= i.list.len {
+    return (false, 0);
+  }
+  var x int = i.list.data[i.index];
+  i.index = i.index + 1;
+  return (true, x);
+}
+
 proc init(l *IntList, capacity int) void {
   l.data = cast(*int) alloc(capacity * 8);
   l.len = 0;
@@ -39,9 +57,17 @@ proc map(l *IntList, f proc(x int) int) void {
 
 proc sum(l *IntList) int {
   var total int = 0;
-  for var i int = 0; i < l.len; i = i + 1 {
-    total = total + l.data[i];
+  // for var i int = 0; i < l.len; i = i + 1 {
+  //   total = total + l.data[i];
+  // }
+
+  var it = l.iter();
+  var (ok, x) = it.next();
+  while ok {
+    total = total + x;
+    (ok, x) = it.next();
   }
+
   return total;
 }
 
@@ -52,5 +78,6 @@ proc main() int {
   l.push(2);
   l.push(3);
   l.map(proc(x int) int { return x * 2; });
+
   return l.sum();
 }
