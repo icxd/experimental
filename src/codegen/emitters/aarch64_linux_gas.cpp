@@ -516,7 +516,18 @@ void Aarch64LinuxGasEmitter::emit_instruction(Instruction instr) {
       _output += "  blr x16\n";
     }
 
-    store_scratch(dst, "x0");
+    if (dst.type == OPERAND_VARIABLE && _current_function != nullptr) {
+      auto it = _current_function->variable_sizes.find(dst.name);
+      if (it != _current_function->variable_sizes.end() && it->second > 8) {
+        size_t loc = _stack_loc.at(dst.name);
+        _output += "  str x0, [sp, #" + std::to_string(loc) + "]\n";
+        _output += "  str x1, [sp, #" + std::to_string(loc + 8) + "]\n";
+      } else {
+        store_scratch(dst, "x0");
+      }
+    } else {
+      store_scratch(dst, "x0");
+    }
   } break;
 
   case OP_RET: {
@@ -538,7 +549,19 @@ void Aarch64LinuxGasEmitter::emit_instruction(Instruction instr) {
       _output += "  cmp x10, x11\n";
       _output += std::format("  cset x0, {}\n", cond);
     } else if (!instr.srcs.empty()) {
-      load_into("x0", instr.srcs[0]);
+      const Operand &ret = instr.srcs[0];
+      if (ret.type == OPERAND_VARIABLE && _current_function != nullptr) {
+        auto it = _current_function->variable_sizes.find(ret.name);
+        if (it != _current_function->variable_sizes.end() && it->second > 8) {
+          size_t loc = _stack_loc.at(ret.name);
+          _output += "  ldr x0, [sp, #" + std::to_string(loc) + "]\n";
+          _output += "  ldr x1, [sp, #" + std::to_string(loc + 8) + "]\n";
+        } else {
+          load_into("x0", ret);
+        }
+      } else {
+        load_into("x0", ret);
+      }
     }
     _output += "  b " + _end_label + "\n";
   } break;

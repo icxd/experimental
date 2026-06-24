@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <codegen/regalloc.hpp>
 #include "ir/ir.hpp"
 
