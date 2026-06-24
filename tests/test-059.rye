@@ -1,0 +1,11 @@
+/// 42
+
+proc values() (int, int) {
+  return (40, 2);
+}
+
+proc main() int {
+  var (a, b) = values();
+  (a, b) = values();
+  return a + b;
+}

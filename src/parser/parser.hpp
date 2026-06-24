@@ -25,8 +25,14 @@ private:
   ErrorOr<Stmt *> parse_block_stmt();
   ErrorOr<std::vector<Stmt *>> parse_block();
   ErrorOr<Stmt *> parse_var_destructure(Token var, Token oparen);
+  ErrorOr<Stmt *> parse_destructure_assign(Token oparen,
+                                           std::vector<Token> names);
   Stmt *make_var_stmt(size_t start, size_t end, Token name, Type *type,
                       std::optional<Expr *> value);
+  Stmt *make_assign_stmt(size_t start, size_t end, Expr *target, Expr *value);
+  ErrorOr<Stmt *> make_destructure_block(size_t start, size_t end,
+                                         std::vector<Token> names, Expr *rhs,
+                                         bool declare_names);
   Token synthetic_id(std::string name, size_t start, size_t end);
   Expr *make_var_expr(Token name);
   Expr *make_int_expr(int64_t value, size_t start, size_t end);

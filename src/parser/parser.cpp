@@ -246,6 +246,20 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
   } else if (peek().type == TOK_ID || peek().type == TOK_OPAREN ||
              peek().type == TOK_STAR) {
     size_t save = _pos;
+
+    if (peek().type == TOK_OPAREN) {
+      Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
+      if (peek().type == TOK_ID) {
+        std::vector<Token> names = try$(parse_name_list());
+        try$(expect(TOK_CPAREN, "Expected `)`"));
+        if (peek().type == TOK_EQ) {
+          consume();
+          return parse_destructure_assign(oparen, names);
+        }
+      }
+      _pos = save;
+    }
+
     Expr *lhs = try$(parse_postfix_expr(false));
     if (peek().type == TOK_EQ && lhs->is_lvalue()) {
       consume();
@@ -1017,45 +1031,72 @@ Stmt *Parser::make_var_stmt(size_t start, size_t end, Token name, Type *type,
   });
 }
 
-ErrorOr<Stmt *> Parser::parse_var_destructure(Token var, Token oparen) {
-  std::vector<Token> names = try$(parse_name_list());
+Stmt *Parser::make_assign_stmt(size_t start, size_t end, Expr *target,
+                               Expr *value) {
+  return _arena.create<Stmt>(Stmt{
+      .type = STMT_ASSIGN,
+      .start = start,
+      .end = end,
+      .data = _arena.create<stmt::Assign>(
+          stmt::Assign{.target = target, .value = value}),
+  });
+}
+
+ErrorOr<Stmt *> Parser::make_destructure_block(size_t start, size_t end,
+                                               std::vector<Token> names,
+                                               Expr *rhs, bool declare_names) {
   if (names.empty()) {
     return std::unexpected(
-        Error("Expected at least one name in destructure pattern", oparen.start,
-              oparen.end));
+        Error("Expected at least one name in destructure pattern", start, end));
   }
 
-  try$(expect(TOK_CPAREN, "Expected `)`"));
-  try$(expect(TOK_EQ, "Expected `=` after destructure pattern"));
-  Expr *rhs = try$(parse_expr());
-  Token semi =
-      try$(expect(TOK_SEMICOLON, "Expected `;` after variable declaration"));
-
-  Token tmp = synthetic_id(
-      std::format("__dtmp{}", _destructure_tmp++), var.start, rhs->end);
+  Token tmp = synthetic_id(std::format("__dtmp{}", _destructure_tmp++), start,
+                           rhs->end);
   std::vector<Stmt *> stmts{};
-  stmts.push_back(make_var_stmt(var.start, semi.end, tmp, nullptr, rhs));
+  stmts.push_back(make_var_stmt(start, end, tmp, nullptr, rhs));
 
   Expr *base = make_var_expr(tmp);
   for (size_t i = 0; i < names.size(); i++) {
     if (names[i].id_value == "_")
       continue;
     Expr *elem =
-        make_index_expr(base, static_cast<int64_t>(i), names[i].start, semi.end);
-    stmts.push_back(
-        make_var_stmt(names[i].start, semi.end, names[i], nullptr, elem));
+        make_index_expr(base, static_cast<int64_t>(i), names[i].start, end);
+    if (declare_names) {
+      stmts.push_back(
+          make_var_stmt(names[i].start, end, names[i], nullptr, elem));
+    } else {
+      stmts.push_back(make_assign_stmt(names[i].start, end,
+                                       make_var_expr(names[i]), elem));
+    }
   }
 
   if (stmts.size() == 1) {
     return std::unexpected(Error(
-        "Destructure pattern must bind at least one variable", oparen.start,
-        semi.end));
+        "Destructure pattern must bind at least one variable", start, end));
   }
 
   return _arena.create<Stmt>(Stmt{
       .type = STMT_BLOCK,
-      .start = var.start,
-      .end = semi.end,
+      .start = start,
+      .end = end,
       .data = _arena.create<stmt::Block>(stmt::Block{.stmts = stmts}),
   });
+}
+
+ErrorOr<Stmt *> Parser::parse_var_destructure(Token var, Token oparen) {
+  std::vector<Token> names = try$(parse_name_list());
+  try$(expect(TOK_CPAREN, "Expected `)`"));
+  try$(expect(TOK_EQ, "Expected `=` after destructure pattern"));
+  Expr *rhs = try$(parse_expr());
+  Token semi =
+      try$(expect(TOK_SEMICOLON, "Expected `;` after variable declaration"));
+  return make_destructure_block(var.start, semi.end, names, rhs, true);
+}
+
+ErrorOr<Stmt *> Parser::parse_destructure_assign(Token oparen,
+                                                 std::vector<Token> names) {
+  Expr *rhs = try$(parse_expr());
+  Token semi =
+      try$(expect(TOK_SEMICOLON, "Expected `;` after assignment"));
+  return make_destructure_block(oparen.start, semi.end, names, rhs, false);
 }
