@@ -1,6 +1,8 @@
 #pragma once
 
-#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <memory>
 #include <cassert>
 #include <cctype>
 #include <cstddef>
@@ -45,8 +47,13 @@ static char *args_shift(int *argc, char ***argv) {
 static std::string exec(std::string cmd) {
   std::array<char, 128> buffer;
   std::string result;
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"),
-                                                pclose);
+  struct PipeCloser {
+    void operator()(FILE *file) const {
+      if (file != nullptr)
+        pclose(file);
+    }
+  };
+  std::unique_ptr<FILE, PipeCloser> pipe(popen(cmd.c_str(), "r"));
   if (!pipe)
     throw std::runtime_error("popen() failed!");
   while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) !=
