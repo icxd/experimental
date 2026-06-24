@@ -3,10 +3,10 @@
 // Linux: libc calls `main` directly — no wrapper needed.
 // macOS: `_main` receives argc/argv/envp from the loader and forwards to `main`.
 
-extern proc main(argc int, argv **int) int;
+extern proc main(argc int, argv **byte) int;
 
 when TARGET_OS == OS_MACOS {
-  proc _main(argc int, argv **int, envp **int) int {
+  proc _main(argc int, argv **byte, envp **byte) int {
     var retcode int = main(argc, argv);
 
     return retcode;
