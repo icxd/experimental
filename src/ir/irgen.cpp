@@ -460,6 +460,10 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
       std::string temp = std::format("__call_ret_{}", _struct_tmp_counter++);
       fn->variable_sizes[temp] = tuple_size(proc->ret_type);
       dst = Operand::Variable(temp);
+    } else if (proc->ret_type->type == TYPE_STRUCT) {
+      std::string temp = std::format("__call_ret_{}", _struct_tmp_counter++);
+      fn->variable_sizes[temp] = struct_size(proc->ret_type);
+      dst = Operand::Variable(temp);
     } else {
       dst = _builder.new_temp();
     }
@@ -479,44 +483,8 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_FIELD: {
     auto field = std::get<expr::Field *>(expr->data);
-    Type *base_type = field->base->expr_type;
-    Type *struct_type = base_type->as_struct_for_field_access();
-    if (struct_type == nullptr)
-      PANIC("field access requires struct or pointer to struct");
-    std::string_view struct_name =
-        std::get<type::Struct *>(struct_type->data)->name;
-    auto strukt = find_struct(struct_name);
-    if (!strukt.has_value())
-      PANIC("struct not found during codegen");
-
-    size_t offset = 0;
-    for (const auto &struct_field: strukt->fields) {
-      if (struct_field.name == field->field.id_value) {
-        offset = struct_field.offset;
-        break;
-      }
-    }
-
-    Operand base;
-    Expr *base_expr = field->base;
-    if (base_expr->type == EXPR_GROUP)
-      base_expr = std::get<expr::Group *>(base_expr->data)->expr;
-
-    if (base_expr->type == EXPR_VAR) {
-      base = Operand::Variable(std::string(
-          std::get<expr::Var *>(base_expr->data)->var.id_value));
-    } else if (base_expr->type == EXPR_DEREF) {
-      auto deref = std::get<expr::Deref *>(base_expr->data);
-      Operand ptr = gen_expr(deref->expr, fn);
-      Operand ptr_val = _builder.new_temp();
-      fn->assign(ptr_val, ptr);
-      Operand dst = _builder.new_temp();
-      fn->load_offset(dst, ptr_val, static_cast<int64_t>(offset));
-      return dst;
-    } else {
-      PANIC("field access only supported on variables and pointers");
-    }
-
+    size_t offset = field_offset(field);
+    Operand base = gen_field_load_base(field->base, fn);
     Operand dst = _builder.new_temp();
     fn->load_offset(dst, base, static_cast<int64_t>(offset));
     return dst;
@@ -582,6 +550,32 @@ size_t Generator::field_offset(expr::Field *field) {
   PANIC("field not found during codegen");
 }
 
+Operand Generator::gen_field_load_base(Expr *base_expr, Function *fn) {
+  if (base_expr->type == EXPR_GROUP)
+    base_expr = std::get<expr::Group *>(base_expr->data)->expr;
+
+  switch (base_expr->type) {
+  case EXPR_VAR:
+    return Operand::Variable(std::string(
+        std::get<expr::Var *>(base_expr->data)->var.id_value));
+  case EXPR_DEREF: {
+    auto *deref = std::get<expr::Deref *>(base_expr->data);
+    Operand ptr = gen_expr(deref->expr, fn);
+    Operand ptr_val = _builder.new_temp();
+    fn->assign(ptr_val, ptr);
+    return ptr_val;
+  }
+  case EXPR_FIELD: {
+    Operand inner = gen_expr(base_expr, fn);
+    Operand inner_val = _builder.new_temp();
+    fn->assign(inner_val, inner);
+    return inner_val;
+  }
+  default:
+    PANIC("field access only supported on variables and pointers");
+  }
+}
+
 void Generator::store_lvalue(Function *fn, Expr *target, Operand src) {
   switch (target->type) {
   case EXPR_VAR: {
@@ -593,23 +587,7 @@ void Generator::store_lvalue(Function *fn, Expr *target, Operand src) {
   case EXPR_FIELD: {
     auto *field = std::get<expr::Field *>(target->data);
     size_t offset = field_offset(field);
-    Expr *base_expr = field->base;
-    if (base_expr->type == EXPR_GROUP)
-      base_expr = std::get<expr::Group *>(base_expr->data)->expr;
-
-    Operand base;
-    if (base_expr->type == EXPR_VAR) {
-      base = Operand::Variable(
-          std::string(std::get<expr::Var *>(base_expr->data)->var.id_value));
-    } else if (base_expr->type == EXPR_DEREF) {
-      auto *deref = std::get<expr::Deref *>(base_expr->data);
-      Operand ptr = gen_expr(deref->expr, fn);
-      Operand ptr_val = _builder.new_temp();
-      fn->assign(ptr_val, ptr);
-      base = ptr_val;
-    } else {
-      PANIC("unsupported field assignment base");
-    }
+    Operand base = gen_field_load_base(field->base, fn);
     fn->store_offset(base, static_cast<int64_t>(offset), src);
     return;
   }

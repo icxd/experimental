@@ -50,6 +50,7 @@ private:
   Operand gen_index_addr(expr::Index *index, Function *fn);
   Operand gen_tuple_element_addr(expr::Index *index, Function *fn);
   size_t field_offset(expr::Field *field);
+  Operand gen_field_load_base(Expr *base_expr, Function *fn);
   Linkage find_proc_linkage(std::string_view module, std::string_view name);
   std::optional<CheckedProc> find_proc(std::string_view module,
                                        std::string_view name);
