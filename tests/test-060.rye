@@ -1,0 +1,15 @@
+/// 3
+
+import "std/alloc.rye";
+import "std/string.rye";
+
+proc main() int {
+  var buf *byte = alloc(4);
+  buf[0] = cast(byte) 97;
+  buf[1] = cast(byte) 98;
+  buf[2] = cast(byte) 99;
+  buf[3] = cast(byte) 0;
+  var n int = string:raw_len(buf);
+  dealloc(buf);
+  return n;
+}

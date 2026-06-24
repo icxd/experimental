@@ -18,3 +18,15 @@ proc eq(a String, b String) bool {
   }
   return memcmp(a.ptr, b.ptr, a.len) == 0;
 }
+
+proc raw_len(s *byte) int {
+  var len int = 0;
+  while s[len] != cast(byte)0 {
+    len = len + 1;
+  }
+  return len;
+}
+
+proc from_raw_parts(ptr *byte, len int) String {
+  return String{ ptr = ptr, len = len };
+}
