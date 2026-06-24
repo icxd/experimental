@@ -41,6 +41,10 @@ private:
                           Expr *value);
   void store_struct_fields(Function *fn, Operand base, Expr *value);
   void copy_aggregate(Function *fn, Operand dst, Operand src, size_t size);
+  void copy_aggregate_to_offset(Function *fn, Operand dst_base, int64_t dst_offset,
+                                Operand src, size_t size);
+  void copy_aggregate_from_offset(Function *fn, Operand dst, Operand src_base,
+                                  int64_t src_offset, size_t size);
   std::optional<CheckedStruct> find_struct(std::string_view name);
   size_t struct_size(Type *type);
   size_t tuple_size(Type *type);

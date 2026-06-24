@@ -490,6 +490,16 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     auto field = std::get<expr::Field *>(expr->data);
     size_t offset = field_offset(field);
     Operand base = gen_field_load_base(field->base, fn);
+    Type *field_type = expr->expr_type;
+    if (field_type->type == TYPE_STRUCT || field_type->type == TYPE_TUPLE) {
+      std::string temp = std::format("__field_tmp_{}", _struct_tmp_counter++);
+      size_t size = aggregate_size(field_type);
+      fn->variable_sizes[temp] = size;
+      Operand dst = Operand::Variable(temp);
+      copy_aggregate_from_offset(fn, dst, base, static_cast<int64_t>(offset),
+                                 size);
+      return dst;
+    }
     Operand dst = _builder.new_temp();
     fn->load_offset(dst, base, static_cast<int64_t>(offset));
     return dst;
@@ -685,6 +695,9 @@ Operand Generator::gen_call_arg(Expr *arg, Function *fn, Type *param_type) {
       if (value.type == OPERAND_VARIABLE)
         return Operand::StackAddr(value.name);
     }
+    Operand value = gen_expr(arg, fn);
+    if (value.type == OPERAND_VARIABLE)
+      return Operand::StackAddr(value.name);
   }
 
   if (param_type->type == TYPE_TUPLE && arg_type->type == TYPE_TUPLE) {
@@ -721,7 +734,7 @@ std::optional<CheckedStruct> Generator::find_struct(std::string_view name) {
       for (const decl::StructField &field: strukt->fields) {
         fields.push_back(
             CheckedStructField{field.name.id_value, field.type, offset});
-        offset += 8;
+        offset += type_size(field.type);
       }
       return CheckedStruct{name, fields, offset};
     }
@@ -842,9 +855,29 @@ void Generator::copy_aggregate(Function *fn, Operand dst, Operand src,
                                size_t size) {
   if (src.type != OPERAND_VARIABLE || dst.type != OPERAND_VARIABLE)
     PANIC("aggregate copy requires variable operands");
+  copy_aggregate_to_offset(fn, dst, 0, src, size);
+}
+
+void Generator::copy_aggregate_to_offset(Function *fn, Operand dst_base,
+                                         int64_t dst_offset, Operand src,
+                                         size_t size) {
+  if (src.type != OPERAND_VARIABLE)
+    PANIC("aggregate copy requires variable source");
   for (size_t off = 0; off < size; off += 8) {
     Operand chunk = _builder.new_temp();
     fn->load_offset(chunk, src, static_cast<int64_t>(off));
+    fn->store_offset(dst_base, dst_offset + static_cast<int64_t>(off), chunk);
+  }
+}
+
+void Generator::copy_aggregate_from_offset(Function *fn, Operand dst,
+                                         Operand src_base, int64_t src_offset,
+                                         size_t size) {
+  if (dst.type != OPERAND_VARIABLE)
+    PANIC("aggregate copy requires variable destination");
+  for (size_t off = 0; off < size; off += 8) {
+    Operand chunk = _builder.new_temp();
+    fn->load_offset(chunk, src_base, src_offset + static_cast<int64_t>(off));
     fn->store_offset(dst, static_cast<int64_t>(off), chunk);
   }
 }
@@ -879,14 +912,24 @@ void Generator::store_struct_fields(Function *fn, Operand base, Expr *value) {
 
     for (const expr::StructLitField &field: lit->fields) {
       size_t offset = 0;
+      Type *field_type = nullptr;
       for (const auto &struct_field: strukt->fields) {
         if (struct_field.name == field.name.id_value) {
           offset = struct_field.offset;
+          field_type = struct_field.type;
           break;
         }
       }
       Operand val = gen_expr(field.value, fn);
-      fn->store_offset(base, static_cast<int64_t>(offset), val);
+      if (field_type != nullptr &&
+          (field_type->type == TYPE_STRUCT || field_type->type == TYPE_TUPLE)) {
+        if (val.type != OPERAND_VARIABLE)
+          PANIC("aggregate struct field init requires variable operand");
+        copy_aggregate_to_offset(fn, base, static_cast<int64_t>(offset), val,
+                                 type_size(field_type));
+      } else {
+        fn->store_offset(base, static_cast<int64_t>(offset), val);
+      }
     }
     return;
   }
