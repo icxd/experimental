@@ -28,3 +28,23 @@ proc clamp(x int, lo int, hi int) int {
   }
   return x;
 }
+
+
+proc mod(a int, b int) (bool, int) {
+  if b == 0 {
+    return (false, 0);
+  }
+
+  var div = a / b;
+  var result = a - div * b;
+
+  if result < 0 {
+    if b > 0 {
+      result = result + b;
+    } else {
+      result = result - b;
+    }
+  }
+
+  return (true, result);
+}

@@ -1,20 +1,68 @@
 import "std/string.rye";
+import "std/alloc.rye";
+import "std/math.rye";
 
 extern proc write(fd int, buf *byte, count int) int;
 
 const STDOUT int = 1;
 const STDERR int = 2;
 
-proc print_string(s *String) int {
-  if (*s).len == 0 {
+proc print_string(s String) int {
+  if s.len == 0 {
     return 0;
   }
-  return write(STDOUT, (*s).ptr, (*s).len);
+  return write(STDOUT, s.ptr, s.len);
 }
 
-proc eprint_string(s *String) int {
-  if (*s).len == 0 {
+proc eprint_string(s String) int {
+  if s.len == 0 {
     return 0;
   }
-  return write(STDERR, (*s).ptr, (*s).len);
+  return write(STDERR, s.ptr, s.len);
+}
+
+proc print_bytes(s *byte, len int) int {
+  return write(STDOUT, s, len);
+}
+
+proc print_char(c byte) int {
+  return print_bytes(&c, 1);
+}
+
+proc print_int(n int) int {
+  if n == 0 {
+    var _ = print_char(cast(byte)48);
+    return 0;
+  }
+
+  if n < 0 {
+    var _ = print_char(cast(byte)45);
+    n = 0 - n;
+  }
+
+  var digits *byte = alloc:alloc(10);
+  var num_digits int = 0;
+
+  while n > 0 {
+    var (ok, digit) = math:mod(n, 10);
+    if !ok {
+      alloc:dealloc(digits);
+      var _ = eprint_string("mod failed");
+      return 0;
+    }
+
+    digits[num_digits] = cast(byte)digit;
+
+    n = n / 10;
+    num_digits = num_digits + 1;
+  }
+
+  var i int = num_digits - 1;
+  while i >= 0 {
+    var _ = print_char(cast(byte)48 + digits[i]);
+    i = i - 1;
+  }
+
+  alloc:dealloc(digits);
+  return 0;
 }
