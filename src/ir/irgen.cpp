@@ -576,6 +576,13 @@ Operand Generator::gen_field_load_base(Expr *base_expr, Function *fn) {
     fn->assign(inner_val, inner);
     return inner_val;
   }
+  case EXPR_CAST: {
+    auto *cast_ = std::get<expr::Cast *>(base_expr->data);
+    Operand ptr = gen_expr(cast_->expr, fn);
+    Operand ptr_val = _builder.new_temp();
+    fn->assign(ptr_val, ptr);
+    return ptr_val;
+  }
   default:
     PANIC("field access only supported on variables and pointers");
   }

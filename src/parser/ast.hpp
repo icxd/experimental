@@ -83,6 +83,7 @@ namespace stmt {
 
   struct Block {
     std::vector<Stmt *> stmts;
+    bool scoped = true;
   };
 
   struct Var {

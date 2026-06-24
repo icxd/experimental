@@ -588,9 +588,10 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
   switch (stmt->type) {
   case STMT_BLOCK: {
     stmt::Block *block = std::get<stmt::Block *>(stmt->data);
-    try$(expand_when_stmts(block->stmts, scope));
+    Scope *block_scope = block->scoped ? Scope::create(scope) : scope;
+    try$(expand_when_stmts(block->stmts, block_scope));
     for (Stmt *inner: block->stmts)
-      try$(check_stmt(inner, scope));
+      try$(check_stmt(inner, block_scope));
     return {};
   }
 
@@ -621,8 +622,9 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     while_->cond->expr_type =
         new Type{TYPE_BOOL, while_->cond->start, while_->cond->end};
     _loop_depth++;
+    Scope *body_scope = Scope::create(scope);
     for (Stmt *inner: while_->body)
-      try$(check_stmt(inner, scope));
+      try$(check_stmt(inner, body_scope));
     _loop_depth--;
     return {};
   }
@@ -660,8 +662,9 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     for_->cond->expr_type =
         new Type{TYPE_BOOL, for_->cond->start, for_->cond->end};
     _loop_depth++;
+    Scope *body_scope = Scope::create(scope);
     for (Stmt *inner: for_->body)
-      try$(check_stmt(inner, scope));
+      try$(check_stmt(inner, body_scope));
     _loop_depth--;
     try$(check_stmt(for_->step, scope));
     return {};
@@ -674,10 +677,12 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
       return std::unexpected(boolean_condition_error(if_->cond, cond_type));
     }
     if_->cond->expr_type = new Type{TYPE_BOOL, if_->cond->start, if_->cond->end};
+    Scope *then_scope = Scope::create(scope);
     for (Stmt *inner: if_->then_block)
-      try$(check_stmt(inner, scope));
+      try$(check_stmt(inner, then_scope));
+    Scope *else_scope = Scope::create(scope);
     for (Stmt *inner: if_->else_block)
-      try$(check_stmt(inner, scope));
+      try$(check_stmt(inner, else_scope));
     return {};
   }
 

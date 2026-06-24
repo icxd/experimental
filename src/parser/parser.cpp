@@ -241,7 +241,8 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
         .type = STMT_BLOCK,
         .start = var.start,
         .end = semi.end,
-        .data = _arena.create<stmt::Block>(stmt::Block{.stmts = decls}),
+        .data = _arena.create<stmt::Block>(
+            stmt::Block{.stmts = decls, .scoped = false}),
     });
   } else if (peek().type == TOK_ID || peek().type == TOK_OPAREN ||
              peek().type == TOK_STAR) {
@@ -1079,7 +1080,8 @@ ErrorOr<Stmt *> Parser::make_destructure_block(size_t start, size_t end,
       .type = STMT_BLOCK,
       .start = start,
       .end = end,
-      .data = _arena.create<stmt::Block>(stmt::Block{.stmts = stmts}),
+      .data = _arena.create<stmt::Block>(
+          stmt::Block{.stmts = stmts, .scoped = false}),
   });
 }
 

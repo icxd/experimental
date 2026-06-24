@@ -1,0 +1,25 @@
+/// 0
+
+struct A {
+  v int;
+}
+
+struct B {
+  v bool;
+}
+
+proc main() int {
+  var a A = A{ v = 1 };
+  var b B = B{ v = true };
+  if true {
+    var data *A = &a;
+  }
+  if true {
+    var data *B = &b;
+    var x bool = data.v;
+    if x {
+      return 0;
+    }
+  }
+  return 1;
+}
