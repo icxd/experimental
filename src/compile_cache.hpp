@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <fstream>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include <common.hpp>
@@ -53,7 +54,7 @@ inline int compile_object(const std::string &obj, const std::string &asm_file) {
   int fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0644);
   if (fd == -1)
     return -1;
-  if (flock(fd, LOCK_EX) != 0) {
+  if ((::flock)(fd, LOCK_EX) != 0) {
     close(fd);
     return -1;
   }
@@ -62,7 +63,7 @@ inline int compile_object(const std::string &obj, const std::string &asm_file) {
   if (!object_up_to_date(obj, asm_file))
     status = exec_status("clang -c -o " + obj + " " + asm_file);
 
-  flock(fd, LOCK_UN);
+  (::flock)(fd, LOCK_UN);
   close(fd);
   return status;
 }
