@@ -322,6 +322,22 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     }
   } break;
 
+  case OP_LOAD_BYTE: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    assert(instr.srcs.size() == 1);
+    _output += "  mov r10, " + emit_value(instr.srcs[0]) + "\n";
+    _output += "  movzx r10, byte [r10]\n";
+    store_scratch(dst, "r10");
+  } break;
+
+  case OP_STORE_BYTE: {
+    assert(instr.srcs.size() == 2);
+    _output += "  mov r11, " + emit_value(instr.srcs[1]) + "\n";
+    _output += "  mov r10, " + emit_value(instr.srcs[0]) + "\n";
+    _output += "  mov byte [r10], r11\n";
+  } break;
+
   case OP_LOAD_LABEL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;

@@ -47,6 +47,7 @@ private:
   size_t aggregate_size(Type *type);
   size_t type_size(Type *type);
   size_t tuple_element_offset(Type *tuple_type, size_t index);
+  size_t index_element_size(Type *type);
   Operand gen_index_addr(expr::Index *index, Function *fn);
   Operand gen_tuple_element_addr(expr::Index *index, Function *fn);
   size_t field_offset(expr::Field *field);

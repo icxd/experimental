@@ -339,6 +339,22 @@ void Aarch64MacosGasEmitter::emit_instruction(Instruction instr) {
     }
   } break;
 
+  case OP_LOAD_BYTE: {
+    assert(instr.dst.has_value());
+    Operand dst = *instr.dst;
+    assert(instr.srcs.size() == 1);
+    load_into("x10", instr.srcs[0]);
+    _output += "  ldrb w9, [x10]\n";
+    store_scratch(dst, "x9");
+  } break;
+
+  case OP_STORE_BYTE: {
+    assert(instr.srcs.size() == 2);
+    load_into("x11", instr.srcs[1]);
+    load_into("x10", instr.srcs[0]);
+    _output += "  strb w11, [x10]\n";
+  } break;
+
   case OP_LOAD_LABEL: {
     assert(instr.dst.has_value());
     Operand dst = *instr.dst;

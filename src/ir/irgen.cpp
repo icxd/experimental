@@ -396,7 +396,12 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     }
     Operand addr = gen_index_addr(index, fn);
     Operand dst = _builder.new_temp();
-    fn->deref(dst, addr);
+    Type *elem_type = std::get<type::Ptr *>(index->base->expr_type->data)->inner;
+    if (elem_type->type == TYPE_BYTE) {
+      fn->load_byte(dst, addr);
+    } else {
+      fn->deref(dst, addr);
+    }
     return dst;
   }
 
@@ -609,7 +614,13 @@ void Generator::store_lvalue(Function *fn, Expr *target, Operand src) {
       return;
     }
     Operand addr = gen_index_addr(index, fn);
-    fn->store_offset(addr, 0, src);
+    Type *elem_type =
+        std::get<type::Ptr *>(index->base->expr_type->data)->inner;
+    if (elem_type->type == TYPE_BYTE) {
+      fn->store_byte(addr, src);
+    } else {
+      fn->store_offset(addr, 0, src);
+    }
     return;
   }
 
@@ -769,6 +780,12 @@ size_t Generator::type_size(Type *type) {
   std::unreachable();
 }
 
+size_t Generator::index_element_size(Type *type) {
+  if (type->type == TYPE_BYTE || type->type == TYPE_BOOL)
+    return 1;
+  return type_size(type);
+}
+
 Operand Generator::gen_tuple_element_addr(expr::Index *index, Function *fn) {
   auto *idx_lit = std::get<expr::Int *>(index->index->data);
   size_t elem_index = static_cast<size_t>(idx_lit->value);
@@ -796,7 +813,7 @@ Operand Generator::gen_tuple_element_addr(expr::Index *index, Function *fn) {
 Operand Generator::gen_index_addr(expr::Index *index, Function *fn) {
   Type *base_type = index->base->expr_type;
   Type *elem_type = std::get<type::Ptr *>(base_type->data)->inner;
-  size_t elem_size = type_size(elem_type);
+  size_t elem_size = index_element_size(elem_type);
 
   Operand base = gen_expr(index->base, fn);
   Operand idx = gen_expr(index->index, fn);

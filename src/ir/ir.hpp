@@ -104,6 +104,8 @@ enum Opcode {
   OP_DEREF, // a = *b
   OP_LOAD_OFFSET, // a = *(b + offset)
   OP_STORE_OFFSET, // *(b + offset) = c
+  OP_LOAD_BYTE, // a = *(byte *)b
+  OP_STORE_BYTE, // *(byte *)b = c
   OP_LOAD_LABEL, // a = &label
   OP_ADD, // a = b + c
   OP_SUB, // a = b - c
@@ -161,6 +163,12 @@ struct Instruction {
       return "  " ANSI_RED "*(" ANSI_RESET + srcs[0].to_string() + ANSI_RED " + " +
              ANSI_RESET + srcs[1].to_string() + ANSI_RED ") = " ANSI_RESET +
              srcs[2].to_string();
+    case OP_LOAD_BYTE:
+      return "  " + dst->to_string() + ANSI_RED " = *(byte *)" ANSI_RESET +
+             srcs[0].to_string();
+    case OP_STORE_BYTE:
+      return "  " ANSI_RED "*(byte *)" ANSI_RESET + srcs[0].to_string() +
+             ANSI_RED " = " ANSI_RESET + srcs[1].to_string();
     case OP_LOAD_LABEL:
       return "  " + dst->to_string() + ANSI_RED " = &" ANSI_RESET +
              srcs[0].to_string();
@@ -270,6 +278,12 @@ public:
   void store_offset(Operand base, int64_t offset, Operand value) {
     append(Instruction(OP_STORE_OFFSET, std::nullopt,
                        {base, Operand::ConstantInt(offset), value}));
+  }
+  void load_byte(Operand dst, Operand addr) {
+    append(Instruction(OP_LOAD_BYTE, dst, {addr}));
+  }
+  void store_byte(Operand addr, Operand value) {
+    append(Instruction(OP_STORE_BYTE, std::nullopt, {addr, value}));
   }
   void load_label(Operand dst, Operand label) {
     append(Instruction(OP_LOAD_LABEL, dst, {label}));
