@@ -327,7 +327,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     Operand dst = *instr.dst;
     assert(instr.srcs.size() == 1);
     _output += "  mov r10, " + emit_value(instr.srcs[0]) + "\n";
-    _output += "  movzx r10, byte [r10]\n";
+    _output += "  movzx r10, BYTE PTR [r10]\n";
     store_scratch(dst, "r10");
   } break;
 
@@ -335,7 +335,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
     assert(instr.srcs.size() == 2);
     _output += "  mov r11, " + emit_value(instr.srcs[1]) + "\n";
     _output += "  mov r10, " + emit_value(instr.srcs[0]) + "\n";
-    _output += "  mov byte [r10], r11\n";
+    _output += "  mov BYTE PTR [r10], r11b\n";
   } break;
 
   case OP_LOAD_LABEL: {
@@ -511,7 +511,7 @@ void X86_64LinuxGasEmitter::emit_instruction(Instruction instr) {
       }
       _output += "  mov r10, " + emit_value(instr.srcs[1]) + "\n";
       _output += "  cmp r10, " + emit_value(instr.srcs[2]) + "\n";
-      _output += std::format("  {}\n", set);
+      _output += std::format("  {} al\n", set);
       _output += "  movzx rax, al\n";
     } else if (!instr.srcs.empty()) {
       Operand src = instr.srcs[0];
