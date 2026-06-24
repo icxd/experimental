@@ -248,8 +248,10 @@ static ModuleSymbols syntactic_module_symbols(const ParsedModule &module) {
       CheckedProc checked{
           .name = proc->name.id_value,
           .codegen_name = proc->codegen_name,
-          .linkage = proc->linkage,
+          .params = {},
+          .ret_type = nullptr,
           .scope = nullptr,
+          .linkage = proc->linkage,
       };
       if (proc->ret_type.has_value())
         checked.ret_type = proc->ret_type.value();
