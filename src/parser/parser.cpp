@@ -1199,12 +1199,13 @@ ErrorOr<Stmt *> Parser::make_destructure_block(size_t start, size_t end,
     if (names[i].id_value == "_")
       continue;
     Expr *elem =
-        make_index_expr(base, static_cast<int64_t>(i), names[i].start, end);
+        make_index_expr(base, static_cast<int64_t>(i), names[i].start,
+                        names[i].end);
     if (declare_names) {
       stmts.push_back(
-          make_var_stmt(names[i].start, end, names[i], nullptr, elem));
+          make_var_stmt(names[i].start, names[i].end, names[i], nullptr, elem));
     } else {
-      stmts.push_back(make_assign_stmt(names[i].start, end,
+      stmts.push_back(make_assign_stmt(names[i].start, names[i].end,
                                        make_var_expr(names[i]), elem));
     }
   }

@@ -255,13 +255,13 @@ Expr *Checker::make_index_expr(Expr *base, int64_t idx, size_t start,
   });
 }
 
-Expr *Checker::make_method_call(Expr *receiver, std::string_view method,
-                                size_t start, size_t end) {
-  Token method_token = synthetic_token(std::string(method), start, end);
+Expr *Checker::make_method_call(Expr *receiver, std::string_view method) {
+  Token method_token =
+      synthetic_token(std::string(method), receiver->end, receiver->end);
   return _arena->create<Expr>(Expr{
       .type = EXPR_CALL,
       .start = receiver->start,
-      .end = end,
+      .end = receiver->end,
       .data = _arena->create<expr::Call>(
           expr::Call{.name = method_token, .arguments = {}, .receiver = receiver}),
   });
@@ -318,12 +318,14 @@ Checker::make_tuple_destructure(size_t start, size_t end,
     if (names[i].id_value == "_")
       continue;
     Expr *elem =
-        make_index_expr(base, static_cast<int64_t>(i), names[i].start, end);
+        make_index_expr(base, static_cast<int64_t>(i), names[i].start,
+                        names[i].end);
     if (declare_names) {
-      stmts.push_back(make_var_stmt(names[i].start, end, names[i], nullptr, elem));
+      stmts.push_back(make_var_stmt(names[i].start, names[i].end, names[i],
+                                    nullptr, elem));
     } else {
-      stmts.push_back(make_assign_stmt(names[i].start, end, make_var_expr(names[i]),
-                                       elem));
+      stmts.push_back(make_assign_stmt(names[i].start, names[i].end,
+                                       make_var_expr(names[i]), elem));
     }
   }
 
@@ -340,51 +342,50 @@ ErrorOr<std::vector<Stmt *>> Checker::desugar_for_in(stmt::ForIn *for_in,
   if (_arena == nullptr)
     PANIC("arena required for for-in desugar");
 
+  size_t anchor = for_in->iterable->end;
   size_t suffix = _for_in_tmp++;
   Token it_token =
-      synthetic_token(std::format("__rye_it{}", suffix), start, end);
+      synthetic_token(std::format("__rye_it{}", suffix), anchor, anchor);
   Token ok_token =
-      synthetic_token(std::format("__rye_ok{}", suffix), start, end);
+      synthetic_token(std::format("__rye_ok{}", suffix), anchor, anchor);
   Token binding_token = for_in->binding->name;
 
-  Expr *iter_call =
-      make_method_call(for_in->iterable, "iter", start, for_in->iterable->end);
-  Stmt *it_decl =
-      make_var_stmt(start, end, it_token, nullptr, iter_call);
+  Expr *iter_call = make_method_call(for_in->iterable, "iter");
+  Stmt *it_decl = make_var_stmt(anchor, anchor, it_token, nullptr, iter_call);
 
   Expr *it_expr = make_var_expr(it_token);
-  Expr *next_call =
-      make_method_call(it_expr, "next", start, for_in->iterable->end);
+  Expr *next_call = make_method_call(it_expr, "next");
 
   std::vector<Stmt *> init_stmts{};
   if (for_in->binding->type != nullptr) {
     Token tmp =
-        synthetic_token(std::format("__rye_next{}", suffix), start, end);
-    init_stmts.push_back(make_var_stmt(start, end, tmp, nullptr, next_call));
+        synthetic_token(std::format("__rye_next{}", suffix), anchor, anchor);
+    init_stmts.push_back(make_var_stmt(anchor, anchor, tmp, nullptr, next_call));
     Expr *tmp_expr = make_var_expr(tmp);
     init_stmts.push_back(
-        make_var_stmt(start, end, ok_token, nullptr,
-                      make_index_expr(tmp_expr, 0, start, end)));
+        make_var_stmt(anchor, anchor, ok_token, nullptr,
+                      make_index_expr(tmp_expr, 0, anchor, anchor)));
     init_stmts.push_back(
-        make_var_stmt(start, end, binding_token, for_in->binding->type,
-                      make_index_expr(tmp_expr, 1, start, end)));
+        make_var_stmt(binding_token.start, binding_token.end, binding_token,
+                      for_in->binding->type,
+                      make_index_expr(tmp_expr, 1, binding_token.start,
+                                      binding_token.end)));
   } else {
     std::vector<Stmt *> destructure = try$(
-        make_tuple_destructure(start, end, {ok_token, binding_token}, next_call,
-                               true));
+        make_tuple_destructure(anchor, anchor, {ok_token, binding_token},
+                               next_call, true));
     init_stmts.insert(init_stmts.end(), destructure.begin(), destructure.end());
   }
 
   std::vector<Stmt *> while_body = for_in->body;
-  Expr *next_step =
-      make_method_call(make_var_expr(it_token), "next", start, end);
+  Expr *next_step = make_method_call(make_var_expr(it_token), "next");
   std::vector<Stmt *> step_stmts = try$(
-      make_tuple_destructure(start, end, {ok_token, binding_token}, next_step,
-                             false));
+      make_tuple_destructure(anchor, anchor, {ok_token, binding_token},
+                             next_step, false));
   while_body.insert(while_body.end(), step_stmts.begin(), step_stmts.end());
 
   Stmt *while_stmt =
-      make_while_stmt(start, end, make_var_expr(ok_token), while_body);
+      make_while_stmt(anchor, end, make_var_expr(ok_token), while_body);
 
   std::vector<Stmt *> out{it_decl};
   out.insert(out.end(), init_stmts.begin(), init_stmts.end());

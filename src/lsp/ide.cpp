@@ -1944,6 +1944,10 @@ void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
     }
     case STMT_FOR_IN: {
       auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      add_sem_token(out, loop->binding->name.start, loop->binding->name.end,
+                    SEM_VARIABLE, MOD_DECLARATION);
+      if (loop->binding->type != nullptr)
+        collect_sem_tokens_in_type(loop->binding->type, out);
       collect_sem_tokens_in_expr(loop->iterable, out);
       collect_sem_tokens_in_stmts(loop->body, out);
       break;

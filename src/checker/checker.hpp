@@ -102,8 +102,7 @@ private:
   Expr *make_var_expr(Token name);
   Expr *make_int_expr(int64_t value, size_t start, size_t end);
   Expr *make_index_expr(Expr *base, int64_t idx, size_t start, size_t end);
-  Expr *make_method_call(Expr *receiver, std::string_view method, size_t start,
-                         size_t end);
+  Expr *make_method_call(Expr *receiver, std::string_view method);
   Stmt *make_var_stmt(size_t start, size_t end, Token name, Type *type,
                       Expr *value);
   Stmt *make_assign_stmt(size_t start, size_t end, Expr *target, Expr *value);
