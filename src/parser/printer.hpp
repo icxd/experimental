@@ -41,6 +41,20 @@ inline void print_type(std::ostream &out, Type *type) {
     out << "\033[36m" << std::get<type::Struct *>(type->data)->name
         << "\033[0m";
     break;
+  case TYPE_ENUM:
+    out << "\033[36m" << std::get<type::Enum *>(type->data)->name << "\033[0m";
+    break;
+  case TYPE_UNION: {
+    auto *union_type = std::get<type::Union *>(type->data);
+    out << "\033[36munion {";
+    for (size_t i = 0; i < union_type->members.size(); i++) {
+      if (i > 0)
+        out << ", ";
+      print_type(out, union_type->members[i]);
+    }
+    out << "}\033[0m";
+    break;
+  }
   case TYPE_PROC: {
     auto *proc = std::get<type::Proc *>(type->data);
     out << "\033[36mproc(";
@@ -183,6 +197,11 @@ inline void print_expr(std::ostream &out, Expr *expr, Indent indent = {}) {
     print_expr(out, cast_->expr, indent.next(true));
     break;
   }
+
+  case EXPR_ENUM_CASE:
+    out << " ."
+        << std::get<expr::EnumCase *>(expr->data)->member.id_value << "\n";
+    break;
 
   case EXPR_INDEX: {
     auto index = std::get<expr::Index *>(expr->data);
@@ -383,6 +402,16 @@ static inline void print_decl(std::ostream &out, Decl *decl,
       out << "\033[34m" << strukt->fields[i].name.id_value << "\033[0m ";
       print_type(out, strukt->fields[i].type);
       out << "\n";
+    }
+    break;
+  }
+
+  case DECL_ENUM: {
+    auto *enum_ = std::get<decl::Enum *>(decl->data);
+    out << " \033[36m" << enum_->name.id_value << "\033[0m\n";
+    for (size_t i = 0; i < enum_->members.size(); ++i) {
+      out << indent.next(i == enum_->members.size() - 1).prefix();
+      out << "\033[34m" << enum_->members[i].name.id_value << "\033[0m\n";
     }
     break;
   }

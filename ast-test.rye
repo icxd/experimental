@@ -25,18 +25,18 @@ struct Expr {
 
 proc visit(e *Expr) void {
   if e.type == ExprType.INT {
-    var int_data = cast(*IntExpr) &e.data;
-    var _ = io:print_int(int_data.value);
+    var data = cast(*IntExpr) &e.data;
+    var _ = io:print_int(data.value);
   } else if e.type == ExprType.BOOL {
-    var bool_data = cast(*BoolExpr) &e.data;
-    if bool_data.value {
+    var data = cast(*BoolExpr) &e.data;
+    if data.value {
       var _ = io:print_string("true");
     } else {
       var _ = io:print_string("false");
     }
   } else if e.type == ExprType.VAR {
-    var var_data = cast(*VarExpr) &e.data;
-    var _ = io:print_string(var_data.name);
+    var data = cast(*VarExpr) &e.data;
+    var _ = io:print_string(data.name);
   }
 
   var _ = io:print_char(cast(byte) 10);

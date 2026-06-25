@@ -26,6 +26,10 @@ std::string type_mangle_suffix(Type *type) {
   }
   case TYPE_STRUCT:
     return "S" + std::string(std::get<type::Struct *>(type->data)->name);
+  case TYPE_ENUM:
+    return "E" + std::string(std::get<type::Enum *>(type->data)->name);
+  case TYPE_UNION:
+    return "U";
   case TYPE_PROC:
     return "F";
   case TYPE_TUPLE: {

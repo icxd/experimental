@@ -75,6 +75,12 @@ Decl *find_top_level_decl(ParsedModule &module, std::string_view name,
         return decl;
       break;
     }
+    case DECL_ENUM: {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      if (enum_->name.id_value == name)
+        return decl;
+      break;
+    }
     case DECL_CONST: {
       auto *konst = std::get<decl::Const *>(decl->data);
       if (konst->name.id_value == name)
@@ -468,7 +474,7 @@ void collect_inlay_hints_in_stmts(const Project &project, const ParsedModule &mo
   }
 }
 
-enum class SymKind { Proc, Struct, Const, LocalVar, Param, StructField };
+enum class SymKind { Proc, Struct, Enum, Const, LocalVar, Param, StructField };
 
 struct Sym {
   SymKind kind;
@@ -540,6 +546,29 @@ std::optional<Sym> resolve_symbol(const Project &project,
                      .file_path = module->abs_path,
                      .def_start = field.name.start,
                      .def_end = field.name.end,
+                     .renamable = !module->is_runtime};
+        }
+      }
+    }
+    if (decl->type == DECL_ENUM) {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      if (offset_in_token(offset, enum_->name.start, enum_->name.end)) {
+        return Sym{.kind = SymKind::Enum,
+                   .module_name = std::string(module->module_name),
+                   .name = std::string(enum_->name.id_value),
+                   .file_path = module->abs_path,
+                   .def_start = enum_->name.start,
+                   .def_end = enum_->name.end,
+                   .renamable = !module->is_runtime};
+      }
+      for (const auto &member: enum_->members) {
+        if (offset_in_token(offset, member.name.start, member.name.end)) {
+          return Sym{.kind = SymKind::Enum,
+                     .module_name = std::string(module->module_name),
+                     .name = std::string(member.name.id_value),
+                     .file_path = module->abs_path,
+                     .def_start = member.name.start,
+                     .def_end = member.name.end,
                      .renamable = !module->is_runtime};
         }
       }
@@ -715,6 +744,12 @@ bool type_matches_struct(Type *type, const Sym &sym) {
          sym.kind == SymKind::Struct;
 }
 
+bool type_matches_enum(Type *type, const Sym &sym) {
+  return type != nullptr && type->type == TYPE_ENUM &&
+         std::get<type::Enum *>(type->data)->name == sym.name &&
+         sym.kind == SymKind::Enum;
+}
+
 void push_location(std::vector<LspLocation> &out, const ParsedModule &mod,
                    size_t start, size_t end) {
   LspLocation loc{
@@ -738,9 +773,19 @@ void collect_refs_in_type(Type *type, const ParsedModule &mod, const Sym &sym,
     return;
   if (type_matches_struct(type, sym))
     push_location(out, mod, type->start, type->end);
+  if (type_matches_enum(type, sym))
+    push_location(out, mod, type->start, type->end);
   if (type->type == TYPE_PTR) {
     auto *ptr = std::get<type::Ptr *>(type->data);
     collect_refs_in_type(ptr->inner, mod, sym, out);
+  }
+  if (type->type == TYPE_UNION) {
+    for (Type *member: std::get<type::Union *>(type->data)->members)
+      collect_refs_in_type(member, mod, sym, out);
+  }
+  if (type->type == TYPE_TUPLE) {
+    for (Type *element: std::get<type::Tuple *>(type->data)->elements)
+      collect_refs_in_type(element, mod, sym, out);
   }
 }
 
@@ -974,6 +1019,18 @@ std::vector<LspLocation> find_symbol_references(const Project &project,
         }
         break;
       }
+      case DECL_ENUM: {
+        auto *enum_ = std::get<decl::Enum *>(decl->data);
+        if (sym.kind == SymKind::Enum && mod.module_name == sym.module_name &&
+            enum_->name.id_value == sym.name)
+          push_location(out, mod, enum_->name.start, enum_->name.end);
+        for (const auto &member: enum_->members) {
+          if (sym.kind == SymKind::Enum && mod.module_name == sym.module_name &&
+              member.name.id_value == sym.name)
+            push_location(out, mod, member.name.start, member.name.end);
+        }
+        break;
+      }
       case DECL_CONST: {
         auto *konst = std::get<decl::Const *>(decl->data);
         if (sym.kind == SymKind::Const && mod.module_name == sym.module_name &&
@@ -990,8 +1047,8 @@ std::vector<LspLocation> find_symbol_references(const Project &project,
   }
 
   if (include_declaration && sym.kind != SymKind::Proc &&
-      sym.kind != SymKind::Struct && sym.kind != SymKind::Const &&
-      sym.kind != SymKind::StructField)
+      sym.kind != SymKind::Struct && sym.kind != SymKind::Enum &&
+      sym.kind != SymKind::Const && sym.kind != SymKind::StructField)
     add_def();
 
   return out;
@@ -1035,6 +1092,9 @@ void collect_sem_tokens_in_type(Type *type, std::vector<RawSemanticToken> &out) 
   case TYPE_STRUCT:
     add_sem_token(out, type->start, type->end, SEM_STRUCT);
     break;
+  case TYPE_ENUM:
+    add_sem_token(out, type->start, type->end, SEM_STRUCT);
+    break;
   case TYPE_PTR:
     collect_sem_tokens_in_type(std::get<type::Ptr *>(type->data)->inner, out);
     break;
@@ -1042,6 +1102,11 @@ void collect_sem_tokens_in_type(Type *type, std::vector<RawSemanticToken> &out) 
     auto *tuple = std::get<type::Tuple *>(type->data);
     for (Type *element: tuple->elements)
       collect_sem_tokens_in_type(element, out);
+    break;
+  }
+  case TYPE_UNION: {
+    for (Type *member: std::get<type::Union *>(type->data)->members)
+      collect_sem_tokens_in_type(member, out);
     break;
   }
   case TYPE_PROC: {
@@ -1127,6 +1192,11 @@ void collect_sem_tokens_in_expr(Expr *expr, std::vector<RawSemanticToken> &out) 
   }
   case EXPR_SIZEOF:
     break;
+  case EXPR_ENUM_CASE: {
+    auto *case_ = std::get<expr::EnumCase *>(expr->data);
+    add_sem_token(out, case_->member.start, case_->member.end, SEM_PROPERTY);
+    return;
+  }
   case EXPR_INDEX: {
     auto *index = std::get<expr::Index *>(expr->data);
     collect_sem_tokens_in_expr(index->base, out);
@@ -1317,6 +1387,28 @@ IdeService::document_symbols(std::string_view abs_path) const {
       symbols.push_back(std::move(symbol));
       break;
     }
+    case DECL_ENUM: {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      DocumentSymbol symbol{
+          .name = std::string(module->source.substr(enum_->name.start,
+                                                    enum_->name.end -
+                                                        enum_->name.start)),
+          .kind = 10,
+          .range = make_range(module->source, enum_->name.start,
+                              enum_->name.end),
+      };
+      for (const auto &member: enum_->members) {
+        symbol.children.push_back(DocumentSymbol{
+            .name = std::string(module->source.substr(
+                member.name.start, member.name.end - member.name.start)),
+            .kind = 22,
+            .range = make_range(module->source, member.name.start,
+                                member.name.end),
+        });
+      }
+      symbols.push_back(std::move(symbol));
+      break;
+    }
     case DECL_CONST: {
       auto *konst = std::get<decl::Const *>(decl->data);
       symbols.push_back(DocumentSymbol{
@@ -1365,6 +1457,11 @@ std::optional<HoverInfo> IdeService::hover(std::string_view abs_path,
       auto *strukt = std::get<decl::Struct *>(decl->data);
       if (strukt->name.id_value == word.value())
         return HoverInfo{.text = std::format("struct {}", strukt->name.id_value)};
+    }
+    if (decl->type == DECL_ENUM) {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      if (enum_->name.id_value == word.value())
+        return HoverInfo{.text = std::format("enum {}", enum_->name.id_value)};
     }
     if (decl->type == DECL_CONST) {
       auto *konst = std::get<decl::Const *>(decl->data);
@@ -1723,6 +1820,16 @@ SemanticTokens IdeService::semantic_tokens(std::string_view abs_path) const {
         add_sem_token(raw, field.name.start, field.name.end, SEM_PROPERTY,
                       MOD_DECLARATION);
         collect_sem_tokens_in_type(field.type, raw);
+      }
+      break;
+    }
+    case DECL_ENUM: {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      add_sem_token(raw, enum_->name.start, enum_->name.end, SEM_STRUCT,
+                    MOD_DEFINITION);
+      for (const auto &member: enum_->members) {
+        add_sem_token(raw, member.name.start, member.name.end, SEM_PROPERTY,
+                      MOD_DECLARATION);
       }
       break;
     }
