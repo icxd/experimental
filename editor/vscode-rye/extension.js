@@ -185,7 +185,9 @@ async function runStartLanguageClient(context) {
   log(`Starting language server: ${serverPath} lsp`);
   log(`Working directory: ${cwd}`);
   log(`Import paths: ${importPaths.join(", ") || "(none)"}`);
-  log(`LSP traffic log: ${path.join(cwd, ".rye", "lsp-traffic.log")}`);
+  if (config.get("lspDebug", false)) {
+    log(`LSP traffic log: ${path.join(cwd, ".rye", "lsp-traffic.log")}`);
+  }
 
   const serverOptions = {
     command: serverPath,
@@ -320,6 +322,16 @@ function activate(context) {
     }),
     vscode.commands.registerCommand("rye.showOutput", () => {
       output?.show(true);
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration("rye.compilerPath") ||
+        event.affectsConfiguration("rye.importPaths") ||
+        event.affectsConfiguration("rye.lspDebug")
+      ) {
+        log("Rye settings changed; restarting language server.");
+        if (extensionContext) void restartLanguageServer(extensionContext);
+      }
     })
   );
 }

@@ -9,6 +9,7 @@
 #include <string>
 #include <tuple>
 #include <algorithm>
+#include <cstdlib>
 
 #include <frontend/project.hpp>
 #include <lsp/format.hpp>
@@ -16,6 +17,11 @@
 #include <lsp/json.hpp>
 
 namespace {
+
+bool lsp_debug_enabled() {
+  const char *value = std::getenv("RYE_LSP_DEBUG");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
 
 using Json = lsp::json::Value;
 using Object = lsp::json::Object;
@@ -108,6 +114,8 @@ private:
   IdeInlayHintOptions _inlay_hint_options{};
   std::map<std::string, std::vector<uint32_t>> _semantic_token_cache{};
   std::map<std::string, std::string> _semantic_token_ids{};
+  uint64_t _semantic_token_serial = 0;
+  bool _lsp_debug = false;
   std::optional<std::string> _root_uri;
   std::optional<std::string> _workspace_root;
 };
@@ -141,6 +149,8 @@ std::string LspServer::outgoing_label(const Json &message) const {
 
 void LspServer::log_outgoing_json(std::string_view body,
                                   const Json &message) const {
+  if (!_lsp_debug)
+    return;
   _traffic_log.log("OUT", outgoing_label(message), body);
 }
 
@@ -624,7 +634,18 @@ void LspServer::handle_request(int id, std::string_view method,
              to_range(LspRange{0, 0, end_line, end_col})},
             {"newText", *formatted},
         }));
+        write_message(Json(Object{{"jsonrpc", "2.0"},
+                                  {"id", id},
+                                  {"result", edits}}));
+        return;
       }
+      write_message(Json(Object{{"jsonrpc", "2.0"},
+                                {"id", id},
+                                {"error",
+                                 Object{{"code", -32000},
+                                        {"message",
+                                         "Cannot format: source has parse errors"}}}}));
+      return;
     }
     write_message(Json(Object{{"jsonrpc", "2.0"},
                               {"id", id},
@@ -881,8 +902,18 @@ void LspServer::handle_request(int id, std::string_view method,
       }
       IdeService ide(_project);
       auto [line, character] = *pos;
-      for (const auto &[edit_uri, edits]:
-           ide.rename(_documents.at(*uri).path, line, character, new_name)) {
+      auto rename_edits =
+          ide.rename(_documents.at(*uri).path, line, character, new_name);
+      if (rename_edits.empty()) {
+        write_message(Json(Object{{"jsonrpc", "2.0"},
+                                  {"id", id},
+                                  {"error",
+                                   Object{{"code", -32000},
+                                          {"message",
+                                           "No symbol at position to rename"}}}}));
+        return;
+      }
+      for (const auto &[edit_uri, edits]: rename_edits) {
         Array text_edits{};
         for (const auto &[range, text]: edits) {
           text_edits.push_back(
@@ -973,7 +1004,7 @@ void LspServer::handle_request(int id, std::string_view method,
 
       SemanticTokens tokens = ide.semantic_tokens(path);
       _semantic_token_cache[*uri] = tokens.data;
-      std::string result_id = std::to_string(_semantic_token_ids.size() + 1);
+      std::string result_id = std::to_string(++_semantic_token_serial);
       _semantic_token_ids[*uri] = result_id;
       Array data{};
       for (uint32_t value: tokens.data)
@@ -1162,6 +1193,8 @@ void LspServer::handle_notification(std::string_view method,
     }
 
     rebuild_project();
+    _semantic_token_cache.erase(uri);
+    _semantic_token_ids.erase(uri);
     publish_all_diagnostics();
     return;
   }
@@ -1179,7 +1212,10 @@ void LspServer::handle_notification(std::string_view method,
       if (_documents.contains(doc_uri)) {
         _project.remove_document(_documents.at(doc_uri).path);
         _documents.erase(doc_uri);
+        _semantic_token_cache.erase(doc_uri);
+        _semantic_token_ids.erase(doc_uri);
         rebuild_project();
+        publish_diagnostics(doc_uri);
       }
     }
     return;
@@ -1217,13 +1253,16 @@ void LspServer::handle_message(const Json &message) {
 }
 
 void LspServer::run() {
-  _traffic_log.open();
+  _lsp_debug = lsp_debug_enabled();
+  if (_lsp_debug)
+    _traffic_log.open();
 
   while (true) {
     auto body = read_message();
     if (!body.has_value())
       break;
-    _traffic_log.log("IN", "message", *body);
+    if (_lsp_debug)
+      _traffic_log.log("IN", "message", *body);
     auto parsed = lsp::json::parse(body.value());
     if (!parsed.has_value())
       continue;

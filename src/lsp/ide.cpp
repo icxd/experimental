@@ -282,6 +282,22 @@ Expr *find_expr_in_stmts(const std::vector<Stmt *> &stmts, size_t offset) {
         return expr;
       break;
     }
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      if (Expr *expr = find_expr_containing_offset(when->cond, offset))
+        return expr;
+      if (Expr *expr = find_expr_in_stmts(when->true_block, offset))
+        return expr;
+      if (Expr *expr = find_expr_in_stmts(when->false_block, offset))
+        return expr;
+      break;
+    }
+    case STMT_COMPTIME_BLOCK: {
+      auto *block = std::get<stmt::ComptimeBlock *>(stmt->data);
+      if (Expr *expr = find_expr_in_stmts(block->stmts, offset))
+        return expr;
+      break;
+    }
     case STMT_BLOCK: {
       auto *block = std::get<stmt::Block *>(stmt->data);
       if (Expr *expr = find_expr_in_stmts(block->stmts, offset))
@@ -626,6 +642,22 @@ Expr *find_call_in_stmts(const std::vector<Stmt *> &stmts, size_t offset) {
         return call;
       break;
     }
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      if (Expr *call = find_call_at_offset(when->cond, offset))
+        return call;
+      if (Expr *call = find_call_in_stmts(when->true_block, offset))
+        return call;
+      if (Expr *call = find_call_in_stmts(when->false_block, offset))
+        return call;
+      break;
+    }
+    case STMT_COMPTIME_BLOCK: {
+      auto *block = std::get<stmt::ComptimeBlock *>(stmt->data);
+      if (Expr *call = find_call_in_stmts(block->stmts, offset))
+        return call;
+      break;
+    }
     case STMT_BLOCK: {
       auto *block = std::get<stmt::Block *>(stmt->data);
       if (Expr *call = find_call_in_stmts(block->stmts, offset))
@@ -789,7 +821,23 @@ std::optional<Sym> find_sym_in_stmts(const ParsedModule &module,
     }
     case STMT_FOR_IN: {
       auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      if (offset_in_token(offset, loop->binding->name.start,
+                          loop->binding->name.end)) {
+        return Sym{.kind = SymKind::LocalVar,
+                   .module_name = std::string(module.module_name),
+                   .name = std::string(loop->binding->name.id_value),
+                   .proc_name = std::string(proc_name),
+                   .file_path = module.abs_path,
+                   .def_start = loop->binding->name.start,
+                   .def_end = loop->binding->name.end};
+      }
       if (auto sym = find_sym_in_stmts(module, proc_name, loop->body, offset))
+        return sym;
+      break;
+    }
+    case STMT_COMPTIME_BLOCK: {
+      auto *block = std::get<stmt::ComptimeBlock *>(stmt->data);
+      if (auto sym = find_sym_in_stmts(module, proc_name, block->stmts, offset))
         return sym;
       break;
     }
@@ -886,11 +934,92 @@ std::optional<Sym> find_local_var_sym_in_stmts(const ParsedModule &module,
         return sym;
       break;
     }
+    case STMT_COMPTIME_BLOCK: {
+      auto *block = std::get<stmt::ComptimeBlock *>(stmt->data);
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, block->stmts, name))
+        return sym;
+      break;
+    }
     default:
       break;
     }
   }
   return std::nullopt;
+}
+
+template <typename AddFn>
+void append_local_var_completions(const std::vector<Stmt *> &stmts,
+                                  std::string_view prefix, AddFn &add_unique) {
+  for (Stmt *stmt: stmts) {
+    switch (stmt->type) {
+    case STMT_VAR: {
+      auto *var = std::get<stmt::Var *>(stmt->data);
+      std::string label = std::string(var->name.id_value);
+      if (!prefix.empty() && !label.starts_with(prefix))
+        continue;
+      add_unique(CompletionItem{
+          .label = label,
+          .detail = var->type != nullptr ? type_to_string(var->type) : "",
+          .insert_text = label,
+          .kind = 6,
+      });
+      break;
+    }
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      append_local_var_completions(iff->then_block, prefix, add_unique);
+      append_local_var_completions(iff->else_block, prefix, add_unique);
+      break;
+    }
+    case STMT_WHILE:
+      append_local_var_completions(
+          std::get<stmt::While *>(stmt->data)->body, prefix, add_unique);
+      break;
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr)
+        append_local_var_completions({loop->init}, prefix, add_unique);
+      if (loop->step != nullptr)
+        append_local_var_completions({loop->step}, prefix, add_unique);
+      append_local_var_completions(loop->body, prefix, add_unique);
+      break;
+    }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      std::string label = std::string(loop->binding->name.id_value);
+      if (prefix.empty() || label.starts_with(prefix)) {
+        add_unique(CompletionItem{
+            .label = label,
+            .detail =
+                loop->binding->type != nullptr
+                    ? type_to_string(loop->binding->type)
+                    : "",
+            .insert_text = label,
+            .kind = 6,
+        });
+      }
+      append_local_var_completions(loop->body, prefix, add_unique);
+      break;
+    }
+    case STMT_BLOCK:
+      append_local_var_completions(
+          std::get<stmt::Block *>(stmt->data)->stmts, prefix, add_unique);
+      break;
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      append_local_var_completions(when->true_block, prefix, add_unique);
+      append_local_var_completions(when->false_block, prefix, add_unique);
+      break;
+    }
+    case STMT_COMPTIME_BLOCK:
+      append_local_var_completions(
+          std::get<stmt::ComptimeBlock *>(stmt->data)->stmts, prefix,
+          add_unique);
+      break;
+    default:
+      break;
+    }
+  }
 }
 
 void collect_inlay_hints_in_expr(const Project &project, const ParsedModule &mod,
@@ -1100,6 +1229,11 @@ void collect_inlay_hints_in_stmts(const Project &project, const ParsedModule &mo
       collect_inlay_hints_in_stmts(project, mod, when->false_block, options, out);
       break;
     }
+    case STMT_COMPTIME_BLOCK:
+      collect_inlay_hints_in_stmts(
+          project, mod,
+          std::get<stmt::ComptimeBlock *>(stmt->data)->stmts, options, out);
+      break;
     default:
       break;
     }
@@ -1796,6 +1930,9 @@ constexpr uint32_t MOD_READONLY = 1 << 2;
 void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
                                  std::vector<RawSemanticToken> &out);
 
+void collect_sem_tokens_in_decls(const std::vector<Decl *> &decls,
+                                 std::vector<RawSemanticToken> &out);
+
 void collect_sem_tokens_in_type(Type *type, std::vector<RawSemanticToken> &out) {
   if (type == nullptr)
     return;
@@ -1942,6 +2079,59 @@ void collect_sem_tokens_in_expr(Expr *expr, std::vector<RawSemanticToken> &out) 
   }
 }
 
+void collect_sem_tokens_in_decls(const std::vector<Decl *> &decls,
+                                 std::vector<RawSemanticToken> &out) {
+  for (Decl *decl: decls) {
+    switch (decl->type) {
+    case DECL_PROC: {
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      add_sem_token(out, proc->name.start, proc->name.end, SEM_FUNCTION,
+                    MOD_DEFINITION);
+      for (const Param &param: proc->params) {
+        add_sem_token(out, param.name.start, param.name.end, SEM_PARAMETER,
+                      MOD_DECLARATION);
+        collect_sem_tokens_in_type(param.type, out);
+      }
+      if (proc->ret_type.has_value())
+        collect_sem_tokens_in_type(proc->ret_type.value(), out);
+      collect_sem_tokens_in_stmts(proc->body, out);
+      break;
+    }
+    case DECL_STRUCT: {
+      auto *strukt = std::get<decl::Struct *>(decl->data);
+      add_sem_token(out, strukt->name.start, strukt->name.end, SEM_STRUCT,
+                    MOD_DEFINITION);
+      for (const auto &field: strukt->fields) {
+        add_sem_token(out, field.name.start, field.name.end, SEM_PROPERTY,
+                      MOD_DECLARATION);
+        collect_sem_tokens_in_type(field.type, out);
+      }
+      break;
+    }
+    case DECL_ENUM: {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      add_sem_token(out, enum_->name.start, enum_->name.end, SEM_STRUCT,
+                    MOD_DEFINITION);
+      for (const auto &member: enum_->members) {
+        add_sem_token(out, member.name.start, member.name.end, SEM_PROPERTY,
+                      MOD_DECLARATION);
+      }
+      break;
+    }
+    case DECL_CONST: {
+      auto *konst = std::get<decl::Const *>(decl->data);
+      add_sem_token(out, konst->name.start, konst->name.end, SEM_VARIABLE,
+                    MOD_READONLY | MOD_DECLARATION);
+      collect_sem_tokens_in_type(konst->type, out);
+      collect_sem_tokens_in_expr(konst->value, out);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+}
+
 void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
                                  std::vector<RawSemanticToken> &out) {
   for (Stmt *stmt: stmts) {
@@ -2017,6 +2207,12 @@ void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
       collect_sem_tokens_in_expr(when->cond, out);
       collect_sem_tokens_in_stmts(when->true_block, out);
       collect_sem_tokens_in_stmts(when->false_block, out);
+      break;
+    }
+    case STMT_COMPTIME_BLOCK: {
+      auto *block = std::get<stmt::ComptimeBlock *>(stmt->data);
+      collect_sem_tokens_in_decls(block->decls, out);
+      collect_sem_tokens_in_stmts(block->stmts, out);
       break;
     }
     default:
@@ -2165,6 +2361,7 @@ void collect_folding_in_stmts(const ParsedModule &mod,
     case STMT_WHILE:
     case STMT_FOR:
     case STMT_FOR_IN:
+    case STMT_WHEN:
     case STMT_COMPTIME_BLOCK:
       if (end_line > start_line)
         out.push_back(FoldingRange{.start_line = start_line,
@@ -2408,6 +2605,12 @@ void collect_calls_in_stmts(const Project &project, const ParsedModule &mod,
       collect_calls_in_stmts(project, mod, when->true_block, caller_proc,
                              callee_module, callee_name, out);
       collect_calls_in_stmts(project, mod, when->false_block, caller_proc,
+                             callee_module, callee_name, out);
+      break;
+    }
+    case STMT_COMPTIME_BLOCK: {
+      auto *block = std::get<stmt::ComptimeBlock *>(stmt->data);
+      collect_calls_in_stmts(project, mod, block->stmts, caller_proc,
                              callee_module, callee_name, out);
       break;
     }
@@ -3076,20 +3279,7 @@ IdeService::completion(std::string_view abs_path, size_t line,
         });
       }
 
-      for (Stmt *stmt: proc->body) {
-        if (stmt->type != STMT_VAR)
-          continue;
-        auto *var = std::get<stmt::Var *>(stmt->data);
-        std::string label = std::string(var->name.id_value);
-        if (!prefix.empty() && !label.starts_with(prefix))
-          continue;
-        add_unique(CompletionItem{
-            .label = label,
-            .detail = var->type != nullptr ? type_to_string(var->type) : "",
-            .insert_text = label,
-            .kind = 6,
-        });
-      }
+      append_local_var_completions(proc->body, prefix, add_unique);
       break;
     }
   }
