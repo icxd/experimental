@@ -225,6 +225,8 @@ void Generator::gen_stmt(Stmt *stmt, Function *fn) {
     gen_expr(expr_stmt->expr, fn);
   } break;
 
+  case STMT_COMPTIME_BLOCK:
+    PANIC("unreachable");
   case STMT_WHEN:
     PANIC("unreachable");
   }

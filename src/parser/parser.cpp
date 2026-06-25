@@ -18,19 +18,11 @@ ErrorOr<std::vector<Decl *>> Parser::parse_decls() {
 ErrorOr<Decl *> Parser::parse_decl() {
   if (peek().type == TOK_COMPTIME && peek(1).type == TOK_OBRACE) {
     Token comptime = try$(expect(TOK_COMPTIME, "Expected `comptime`"));
-    std::vector<Decl *> block_decls{};
-    Token obrace = try$(expect(TOK_OBRACE, "Expected {"));
-    while (_pos < _tokens.size() && peek().type != TOK_CBRACE)
-      block_decls.push_back(try$(parse_decl()));
-    Token cbrace = try$(expect(TOK_CBRACE, "Expected }"));
-
-    auto *block_data = _arena.create<decl::ComptimeBlock>(
-        decl::ComptimeBlock{.decls = block_decls});
-
+    auto *block = try$(parse_comptime_block(comptime));
     return _arena.create<Decl>(Decl{.type = DECL_COMPTIME_BLOCK,
                                     .start = comptime.start,
-                                    .end = cbrace.end,
-                                    .data = block_data});
+                                    .end = previous().end,
+                                    .data = block});
   }
 
   bool is_comptime = false;
@@ -311,6 +303,17 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
       });
     }
     _pos = save;
+  }
+
+  if (peek().type == TOK_COMPTIME && peek(1).type == TOK_OBRACE) {
+    Token comptime = try$(expect(TOK_COMPTIME, "Expected `comptime`"));
+    auto *block = try$(parse_comptime_block(comptime));
+    return _arena.create<Stmt>(Stmt{
+        .type = STMT_COMPTIME_BLOCK,
+        .start = comptime.start,
+        .end = previous().end,
+        .data = block,
+    });
   }
 
   if (peek().type == TOK_WHILE) {
@@ -1024,6 +1027,25 @@ ErrorOr<std::vector<Stmt *>> Parser::parse_block() {
   return block;
 }
 
+ErrorOr<decl::ComptimeBlock *> Parser::parse_comptime_block(Token comptime) {
+  std::vector<Decl *> block_decls{};
+  std::vector<Stmt *> block_stmts{};
+  try$(expect(TOK_OBRACE, "Expected `{`"));
+  while (_pos < _tokens.size() && peek().type != TOK_CBRACE) {
+    if (peek().type == TOK_CONST)
+      block_decls.push_back(try$(parse_decl()));
+    else
+      block_stmts.push_back(try$(parse_stmt()));
+  }
+  try$(expect(TOK_CBRACE, "Expected `}`"));
+  return _arena.create<decl::ComptimeBlock>(
+      decl::ComptimeBlock{.decls = block_decls, .stmts = block_stmts});
+}
+
+bool Parser::at_end() const {
+  return _pos >= _tokens.size() || peek().type == TOK_EOF;
+}
+
 ErrorOr<Token> Parser::expect(TokenType type, std::string message) {
   if (peek().type == type)
     return consume();
@@ -1037,7 +1059,7 @@ Token Parser::consume() {
   return token;
 }
 
-Token Parser::peek(size_t offset) { return _tokens.at(_pos + offset); }
+Token Parser::peek(size_t offset) const { return _tokens.at(_pos + offset); }
 
 Token Parser::previous() { return _tokens.at(_pos - 1); }
 

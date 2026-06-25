@@ -214,8 +214,9 @@ ErrorOr<void> Checker::expand_when_stmts(std::vector<Stmt *> &stmts,
 }
 
 ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
-  try$(inject_builtin_consts());
+    try$(inject_builtin_consts());
   try$(inject_define_consts());
+  try$(register_intrinsic_comptime_procs());
 
   for (Decl *decl: decls) {
     if (decl->type == DECL_STRUCT || decl->type == DECL_ENUM)
@@ -237,11 +238,21 @@ ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
     }
 
     if (decl->type == DECL_COMPTIME_BLOCK) {
-      decl::ComptimeBlock *block =
-          std::get<decl::ComptimeBlock *>(decl->data);
+      auto *block = std::get<decl::ComptimeBlock *>(decl->data);
+      std::vector<Decl *> expanded_decls{};
+      std::vector<Stmt *> expanded_stmts{};
+      try$(expand_comptime_block(block, _global_scope, decl->start, decl->end,
+                                  ComptimeExpansionTarget::Module, expanded_decls,
+                                  expanded_stmts));
+      if (!expanded_stmts.empty()) {
+        return std::unexpected(
+            Error("Module comptime blocks cannot inject statements", decl->start,
+                  decl->end)
+                .with_hint("Use compiler:inject_decl at module scope"));
+      }
       decls.erase(decls.begin() + static_cast<std::ptrdiff_t>(i));
       decls.insert(decls.begin() + static_cast<std::ptrdiff_t>(i),
-                   block->decls.begin(), block->decls.end());
+                   expanded_decls.begin(), expanded_decls.end());
       continue;
     }
 
@@ -338,6 +349,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     refresh_codegen_names_for(proc->name.id_value);
     _current_proc_id = _procs.size() - 1;
 
+    try$(expand_comptime_stmts(proc->body, proc_scope));
     try$(expand_when_stmts(proc->body, proc_scope));
     for (auto *stmt: proc->body)
       try$(check_stmt(stmt, proc_scope));
@@ -803,6 +815,7 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
   }
 
   case STMT_WHEN:
+  case STMT_COMPTIME_BLOCK:
     PANIC("unreachable");
 
   case STMT_ASSIGN: {
@@ -2070,11 +2083,20 @@ ErrorOr<Expr *> Checker::run_comptime_proc(decl::Proc *proc,
     }
 
     Expr *value = try$(evaluate_constant(arg, scope, nullptr));
-    env.vars[std::string(info->params[i].name)] = {param_type, value};
+    ComptimeValue cv{};
+    if (value->type == EXPR_INT)
+      cv = ComptimeValue{.kind = ComptimeValueKind::Int,
+                         .int_value = std::get<expr::Int *>(value->data)->value};
+    else if (value->type == EXPR_BOOL)
+      cv = ComptimeValue{.kind = ComptimeValueKind::Bool,
+                         .bool_value = std::get<expr::Bool *>(value->data)->value};
+    else
+      PANIC("comptime proc args must be int or bool");
+    env.vars[std::string(info->params[i].name)] = {param_type, cv};
   }
 
   auto result = try$(execute_comptime_stmts(info->proc->body, env, scope,
-                                           info->ret_type, start, end));
+                                           info->ret_type, start, end, nullptr));
   if (!result.has_value()) {
     return std::unexpected(
         Error("Comptime procedure did not return a value", start, end));
@@ -2085,34 +2107,40 @@ ErrorOr<Expr *> Checker::run_comptime_proc(decl::Proc *proc,
 ErrorOr<std::optional<Expr *>>
 Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
                                 ComptimeEnv &env, Scope *scope, Type *ret_type,
-                                size_t start, size_t end) {
+                                size_t start, size_t end,
+                                ComptimeExpansion *expansion) {
   for (Stmt *stmt: stmts) {
     switch (stmt->type) {
     case STMT_VAR: {
       auto var = std::get<stmt::Var *>(stmt->data);
-      if (var->type == nullptr) {
-        return std::unexpected(
-            Error("Comptime variables must have an explicit type", stmt->start,
-                  stmt->end));
-      }
-      Type *type = try$(check_type(var->type, scope));
-      if (type->type != TYPE_INT && type->type != TYPE_BOOL) {
-        return std::unexpected(
-            Error("Comptime variables must have type `int` or `bool`",
-                  stmt->start, stmt->end));
-      }
       if (!var->value.has_value()) {
         return std::unexpected(
             Error("Comptime variables must have an initializer", stmt->start,
                   stmt->end));
       }
-      Expr *value = try$(evaluate_constant(var->value.value(), scope, &env));
-      Type *value_type = try$(check_expr(value, scope));
-      if (!type_eq(type, value_type)) {
+      ComptimeValue value =
+          try$(evaluate_comptime_value(var->value.value(), scope, env,
+                                       expansion));
+      Type *type = nullptr;
+      if (var->type == nullptr)
+        type = type_for_comptime_value(value);
+      else
+        type = try$(check_type(var->type, scope));
+      if (!is_comptime_string_type(type) && !is_comptime_stmt_type(type) &&
+          !is_comptime_decl_type(type) && type->type != TYPE_INT &&
+          type->type != TYPE_BOOL) {
+        return std::unexpected(
+            Error("Comptime variables must have type `int`, `bool`, "
+                  "`ComptimeString`, `ComptimeStmt`, or `ComptimeDecl`",
+                  stmt->start, stmt->end));
+      }
+      if (!comptime_value_matches_type(value, type)) {
         return std::unexpected(
             type_mismatch_error("Comptime variable type mismatch", type,
-                                value_type, value));
+                                type_for_comptime_value(value),
+                                var->value.value()));
       }
+      var->type = type;
       env.vars[std::string(var->name.id_value)] = {type, value};
       break;
     }
@@ -2134,12 +2162,12 @@ Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
                               name),
                   assign->target->start, assign->target->end));
       }
-      Expr *value = try$(evaluate_constant(assign->value, scope, &env));
-      Type *value_type = try$(check_expr(value, scope));
-      if (!type_eq(found->second.type, value_type)) {
+      ComptimeValue value =
+          try$(evaluate_comptime_value(assign->value, scope, env, expansion));
+      if (!comptime_value_matches_type(value, found->second.type)) {
         return std::unexpected(type_mismatch_error(
-            "Comptime assignment type mismatch", found->second.type, value_type,
-            assign->value));
+            "Comptime assignment type mismatch", found->second.type,
+            type_for_comptime_value(value), assign->value));
       }
       found->second.value = value;
       break;
@@ -2164,16 +2192,16 @@ Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
 
     case STMT_IF: {
       auto if_ = std::get<stmt::If *>(stmt->data);
-      Expr *cond = try$(evaluate_constant(if_->cond, scope, &env));
-      Type *cond_type = try$(check_expr(cond, scope));
-      if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
-        return std::unexpected(boolean_condition_error(if_->cond, cond_type));
+      ComptimeValue cond =
+          try$(evaluate_comptime_value(if_->cond, scope, env, expansion));
+      if (cond.kind != ComptimeValueKind::Bool) {
+        return std::unexpected(
+            boolean_condition_error(if_->cond, new Type{TYPE_BOOL, 0, 0}));
       }
-      bool take_then = std::get<expr::Bool *>(cond->data)->value;
       const std::vector<Stmt *> &branch =
-          take_then ? if_->then_block : if_->else_block;
+          cond.bool_value ? if_->then_block : if_->else_block;
       std::optional<Expr *> result = try$(execute_comptime_stmts(
-          branch, env, scope, ret_type, start, end));
+          branch, env, scope, ret_type, start, end, expansion));
       if (result.has_value())
         return result;
       break;
@@ -2183,19 +2211,19 @@ Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
       auto while_ = std::get<stmt::While *>(stmt->data);
       bool exited = false;
       for (size_t guard = 0; guard < 100000; ++guard) {
-        Expr *cond = try$(evaluate_constant(while_->cond, scope, &env));
-        Type *cond_type = try$(check_expr(cond, scope));
-        if (!type_eq(cond_type, new Type{TYPE_BOOL})) {
+        ComptimeValue cond =
+            try$(evaluate_comptime_value(while_->cond, scope, env, expansion));
+        if (cond.kind != ComptimeValueKind::Bool) {
           return std::unexpected(
-              boolean_condition_error(while_->cond, cond_type));
+              boolean_condition_error(while_->cond, new Type{TYPE_BOOL, 0, 0}));
         }
-        if (!std::get<expr::Bool *>(cond->data)->value) {
+        if (!cond.bool_value) {
           exited = true;
           break;
         }
 
         std::optional<Expr *> result = try$(execute_comptime_stmts(
-            while_->body, env, scope, ret_type, start, end));
+            while_->body, env, scope, ret_type, start, end, expansion));
         if (result.has_value())
           return result;
       }
@@ -2207,20 +2235,50 @@ Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
       break;
     }
 
+    case STMT_FOR: {
+      auto for_ = std::get<stmt::For *>(stmt->data);
+      try$(execute_comptime_stmts({for_->init}, env, scope, ret_type, start, end,
+                                  expansion));
+      for (size_t guard = 0; guard < 100000; ++guard) {
+        ComptimeValue cond =
+            try$(evaluate_comptime_value(for_->cond, scope, env, expansion));
+        if (cond.kind != ComptimeValueKind::Bool) {
+          return std::unexpected(
+              boolean_condition_error(for_->cond, new Type{TYPE_BOOL, 0, 0}));
+        }
+        if (!cond.bool_value)
+          break;
+
+        std::optional<Expr *> result = try$(execute_comptime_stmts(
+            for_->body, env, scope, ret_type, start, end, expansion));
+        if (result.has_value())
+          return result;
+
+        try$(execute_comptime_stmts({for_->step}, env, scope, ret_type, start,
+                                    end, expansion));
+      }
+      break;
+    }
+
     case STMT_BLOCK: {
       auto block = std::get<stmt::Block *>(stmt->data);
       std::optional<Expr *> result = try$(execute_comptime_stmts(
-          block->stmts, env, scope, ret_type, start, end));
+          block->stmts, env, scope, ret_type, start, end, expansion));
       if (result.has_value())
         return result;
       break;
     }
 
-    case STMT_FOR:
+    case STMT_EXPR: {
+      auto *expr_stmt = std::get<stmt::ExprStmt *>(stmt->data);
+      try$(evaluate_comptime_value(expr_stmt->expr, scope, env, expansion));
+      break;
+    }
+
     case STMT_WHEN:
     case STMT_BREAK:
     case STMT_CONTINUE:
-    case STMT_EXPR:
+    case STMT_COMPTIME_BLOCK:
       return std::unexpected(
           Error("Statement is not supported in comptime code", stmt->start,
                 stmt->end));
@@ -2236,6 +2294,21 @@ ErrorOr<void> Checker::check_comptime_proc(decl::Proc *proc, Scope *scope) {
     return std::unexpected(
         Error(std::format("Redeclaration of procedure `{}`", name),
               proc->name.start, proc->name.end));
+  }
+
+  if (is_intrinsic_comptime_proc(_module_name, name)) {
+    std::vector<CheckedParam> params{};
+    for (const Param &param: proc->params)
+      params.push_back({param.name.id_value, param.type});
+    Type *ret_type = proc->ret_type.has_value() ? proc->ret_type.value()
+                                                : new Type{TYPE_VOID, 0, 0};
+    _comptime_procs[name] = ComptimeProcInfo{
+        .proc = proc,
+        .params = params,
+        .ret_type = ret_type,
+        .intrinsic = true,
+    };
+    return {};
   }
 
   if (proc->linkage == LINK_EXTERN) {
@@ -2284,16 +2357,17 @@ ErrorOr<void> Checker::check_comptime_proc(decl::Proc *proc, Scope *scope) {
 
   ComptimeEnv env{};
   for (const auto &param: params) {
-    Expr *dummy = nullptr;
+    ComptimeValue dummy{};
     if (param.type->type == TYPE_INT)
-      dummy = new Expr{EXPR_INT, 0, 0, new expr::Int{0}};
+      dummy = ComptimeValue{.kind = ComptimeValueKind::Int, .int_value = 0};
     else
-      dummy = new Expr{EXPR_BOOL, 0, 0, new expr::Bool{false}};
+      dummy = ComptimeValue{.kind = ComptimeValueKind::Bool, .bool_value = false};
     env.vars[std::string(param.name)] = {param.type, dummy};
   }
 
   std::optional<Expr *> validated = try$(execute_comptime_stmts(
-      proc->body, env, scope, ret_type, proc->name.start, proc->name.end));
+      proc->body, env, scope, ret_type, proc->name.start, proc->name.end,
+      nullptr));
   if (!validated.has_value()) {
     return std::unexpected(
         Error("Comptime procedure must return a value on all paths",
@@ -2353,8 +2427,12 @@ ErrorOr<Expr *> Checker::evaluate_constant(Expr *expr, Scope *scope,
 
     if (env != nullptr) {
       auto found = env->vars.find(std::string(var->var.id_value));
-      if (found != env->vars.end())
-        return found->second.value;
+      if (found != env->vars.end()) {
+        Expr *folded = comptime_value_to_expr(found->second.value, expr->start,
+                                              expr->end);
+        if (folded != nullptr)
+          return folded;
+      }
     }
 
     if (!_imports.empty()) {

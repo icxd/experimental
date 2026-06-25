@@ -1,0 +1,16 @@
+/// 3
+import "std/compiler.rye";
+import "std/string.rye";
+
+proc main() int {
+  comptime {
+    for var i = 0; i < 3; i = i + 1 {
+      var i_str = string:to_str(i);
+      var code = "var generated" + i_str + " int = " + i_str + ";\n";
+      var stmt = compiler:parse_stmt(code);
+      compiler:inject_stmt(stmt);
+    }
+  }
+
+  return generated0 + generated1 + generated2;
+}

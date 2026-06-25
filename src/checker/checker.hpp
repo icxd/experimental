@@ -10,18 +10,21 @@
 #include <parser/ast.hpp>
 #include <vector>
 
+class Arena;
+
 class Checker {
 public:
   Checker(std::string_view module_name, std::string_view file_path,
           const ModuleRegistry *registry = nullptr, bool is_runtime = false,
           const std::vector<std::string> &import_search_paths = {},
-          const CompileConfig &config = {}) :
+          const CompileConfig &config = {}, Arena *arena = nullptr) :
       _module_name(module_name),
       _file_path(file_path),
       _registry(registry),
       _is_runtime(is_runtime),
       _import_search_paths(import_search_paths),
-      _config(config) {}
+      _config(config),
+      _arena(arena) {}
 
   ErrorOr<void> check_decls(std::vector<Decl *> &decls);
 
@@ -50,8 +53,36 @@ private:
                                     Scope *scope, size_t start, size_t end);
   ErrorOr<std::optional<Expr *>>
   execute_comptime_stmts(const std::vector<Stmt *> &stmts, ComptimeEnv &env,
-                         Scope *scope, Type *ret_type, size_t start,
-                         size_t end);
+                         Scope *scope, Type *ret_type, size_t start, size_t end,
+                         ComptimeExpansion *expansion = nullptr);
+
+  ErrorOr<void> expand_comptime_block(decl::ComptimeBlock *block, Scope *scope,
+                                      size_t start, size_t end,
+                                      ComptimeExpansionTarget target,
+                                      std::vector<Decl *> &out_decls,
+                                      std::vector<Stmt *> &out_stmts);
+  ErrorOr<void> expand_comptime_stmts(std::vector<Stmt *> &stmts, Scope *scope);
+
+  ErrorOr<ComptimeValue> evaluate_comptime_value(Expr *expr, Scope *scope,
+                                                 ComptimeEnv &env,
+                                                 ComptimeExpansion *expansion);
+  ErrorOr<void> register_intrinsic_comptime_procs();
+  bool is_intrinsic_comptime_proc(std::string_view module,
+                                  std::string_view name) const;
+  ErrorOr<ComptimeValue> run_intrinsic_comptime_proc(
+      std::string_view module, std::string_view name,
+      const std::vector<ComptimeValue> &args, ComptimeExpansion *expansion,
+      size_t start, size_t end);
+  Type *comptime_string_type();
+  Type *comptime_stmt_type();
+  Type *comptime_decl_type();
+  bool is_comptime_string_type(Type *type) const;
+  bool is_comptime_stmt_type(Type *type) const;
+  bool is_comptime_decl_type(Type *type) const;
+  bool comptime_value_matches_type(const ComptimeValue &value, Type *type) const;
+  Type *type_for_comptime_value(const ComptimeValue &value);
+  Expr *comptime_value_to_expr(const ComptimeValue &value, size_t start,
+                               size_t end) const;
 
   std::optional<ComptimeProcInfo> find_comptime_proc(std::string_view name);
 
@@ -126,6 +157,12 @@ private:
   std::vector<CheckedLambda> _lambdas = {};
   size_t _lambda_counter = 0;
   std::unordered_map<std::string, ComptimeProcInfo> _comptime_procs = {};
+  std::unordered_map<std::string, ComptimeProcInfo> _intrinsic_comptime_procs =
+      {};
+  Arena *_arena = nullptr;
+  Type *_comptime_string_type = nullptr;
+  Type *_comptime_stmt_type = nullptr;
+  Type *_comptime_decl_type = nullptr;
   size_t _current_proc_id = std::numeric_limits<size_t>::max();
   std::vector<CheckedConst> _consts = {};
   std::vector<CheckedStruct> _structs = {};

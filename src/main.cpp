@@ -61,6 +61,7 @@ int main(int argc, char *argv[]) {
 
   opts.files.push_back("runtime/ryert.rye");
   opts.files.push_back("std/string.rye");
+  opts.files.push_back("std/compiler.rye");
 
   for (int i = 0; i < argc;) {
     char *opt = argv[i++];

@@ -39,6 +39,7 @@ namespace decl {
 
   struct ComptimeBlock {
     std::vector<Decl *> decls;
+    std::vector<Stmt *> stmts;
   };
 
   struct When {
@@ -145,6 +146,8 @@ namespace stmt {
     Expr *expr;
   };
 
+  using ComptimeBlock = decl::ComptimeBlock;
+
 } // namespace stmt
 
 enum StmtType {
@@ -159,13 +162,15 @@ enum StmtType {
   STMT_CONTINUE,
   STMT_WHEN,
   STMT_EXPR,
+  STMT_COMPTIME_BLOCK,
 };
 struct Stmt {
   StmtType type;
   size_t start, end;
   std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *,
                stmt::Assign *, stmt::While *, stmt::For *, stmt::Break *,
-               stmt::Continue *, stmt::When *, stmt::ExprStmt *>
+               stmt::Continue *, stmt::When *, stmt::ExprStmt *,
+               decl::ComptimeBlock *>
       data;
 };
 

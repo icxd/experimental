@@ -32,10 +32,13 @@ add_executable(rye
     src/frontend/project.cpp
     src/lsp/json.cpp
     src/lsp/ide.cpp
+    src/lsp/format.cpp
     src/lsp/server.cpp
     src/lexer/lexer.cpp
     src/parser/parser.cpp
+    src/parser/comptime_parse.cpp
     src/checker/checker.cpp
+    src/checker/checker_comptime.cpp
     src/ir/ir.cpp
     src/ir/irgen.cpp
     src/codegen/regalloc.cpp

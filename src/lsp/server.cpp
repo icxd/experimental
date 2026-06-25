@@ -11,6 +11,7 @@
 #include <algorithm>
 
 #include <frontend/project.hpp>
+#include <lsp/format.hpp>
 #include <lsp/ide.hpp>
 #include <lsp/json.hpp>
 
@@ -104,6 +105,9 @@ private:
   std::map<std::string, OpenDocument> _documents;
   std::vector<std::string> _import_paths;
   bool _initialized = false;
+  IdeInlayHintOptions _inlay_hint_options{};
+  std::map<std::string, std::vector<uint32_t>> _semantic_token_cache{};
+  std::map<std::string, std::string> _semantic_token_ids{};
   std::optional<std::string> _root_uri;
   std::optional<std::string> _workspace_root;
 };
@@ -224,9 +228,11 @@ std::vector<std::string> LspServer::roots() const {
     fs::path root(*_workspace_root);
     result.push_back((root / "runtime" / "ryert.rye").string());
     result.push_back((root / "std" / "string.rye").string());
+    result.push_back((root / "std" / "compiler.rye").string());
   } else {
     result.push_back("runtime/ryert.rye");
     result.push_back("std/string.rye");
+    result.push_back("std/compiler.rye");
   }
   for (const auto &[uri, doc]: _documents)
     result.push_back(doc.path);
@@ -277,6 +283,17 @@ void LspServer::apply_settings(const Json &settings) {
   if (auto root = obj.find("workspaceRoot");
       root != obj.end() && root->second.is_string())
     _workspace_root = project_abs_path(root->second.as_string());
+
+  if (auto hints = obj.find("inlayHints");
+      hints != obj.end() && hints->second.is_object()) {
+    const auto &hint_obj = hints->second.as_object();
+    if (auto v = hint_obj.find("parameterNames");
+        v != hint_obj.end() && v->second.is_bool())
+      _inlay_hint_options.parameter_names = v->second.as_bool();
+    if (auto v = hint_obj.find("variableTypes");
+        v != hint_obj.end() && v->second.is_bool())
+      _inlay_hint_options.variable_types = v->second.as_bool();
+  }
 
   ensure_import_paths();
   _project.set_import_paths(_import_paths);
@@ -363,14 +380,21 @@ void LspServer::handle_request(int id, std::string_view method,
     Object result{
         {"capabilities",
          Object{
-             {"textDocumentSync", 1},
+             {"textDocumentSync",
+              Object{{"openClose", true}, {"change", static_cast<int>(2)}}},
              {"hoverProvider", true},
              {"definitionProvider", true},
+             {"typeDefinitionProvider", true},
+             {"documentHighlightProvider", true},
              {"documentSymbolProvider", true},
+             {"workspaceSymbolProvider", true},
              {"referencesProvider", true},
              {"renameProvider", Object{{"prepareProvider", true}}},
              {"codeActionProvider",
               Object{{"codeActionKinds", Array{"quickfix"}}}},
+             {"foldingRangeProvider", true},
+             {"documentFormattingProvider", true},
+             {"callHierarchyProvider", true},
              {"semanticTokensProvider",
               Object{{"legend",
                       Object{
@@ -380,7 +404,8 @@ void LspServer::handle_request(int id, std::string_view method,
                           {"tokenModifiers",
                            Array{"declaration", "definition", "readonly"}},
                       }},
-                      {"full", true}}},
+                      {"full", Object{{"delta", Json(nullptr)}}},
+                      {"range", true}}},
              {"completionProvider",
               Object{{"triggerCharacters", Array{".", ":"}}}},
              {"signatureHelpProvider",
@@ -505,6 +530,203 @@ void LspServer::handle_request(int id, std::string_view method,
     }
 
     write_message(Json(Object{{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}));
+    return;
+  }
+
+  if (method == "textDocument/typeDefinition") {
+    Json result = nullptr;
+    auto uri = parse_text_document_uri(params);
+    auto pos = parse_position(params);
+    if (uri.has_value() && pos.has_value() && _documents.contains(*uri)) {
+      IdeService ide(_project);
+      auto [line, character] = *pos;
+      if (auto location =
+              ide.type_definition(_documents.at(*uri).path, line, character))
+        result = to_location(*location);
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}));
+    return;
+  }
+
+  if (method == "textDocument/documentHighlight") {
+    Array highlights{};
+    auto uri = parse_text_document_uri(params);
+    auto pos = parse_position(params);
+    if (uri.has_value() && pos.has_value() && _documents.contains(*uri)) {
+      IdeService ide(_project);
+      auto [line, character] = *pos;
+      for (const auto &hl:
+           ide.document_highlight(_documents.at(*uri).path, line, character)) {
+        highlights.push_back(
+            Json(Object{{"range", to_range(hl.range)}, {"kind", hl.kind}}));
+      }
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"result", highlights}}));
+    return;
+  }
+
+  if (method == "workspace/symbol") {
+    std::string query;
+    if (params.is_object()) {
+      const auto &obj = params.as_object();
+      if (auto q = obj.find("query"); q != obj.end() && q->second.is_string())
+        query = q->second.as_string();
+    }
+    Array symbols{};
+    IdeService ide(_project);
+    for (const auto &sym: ide.workspace_symbols(query)) {
+      symbols.push_back(Json(Object{
+          {"name", sym.name},
+          {"containerName", sym.container_name},
+          {"kind", sym.kind},
+          {"location", to_location(sym.location)},
+      }));
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"result", symbols}}));
+    return;
+  }
+
+  if (method == "textDocument/foldingRange") {
+    Array ranges{};
+    auto uri = parse_text_document_uri(params);
+    if (uri.has_value() && _documents.contains(*uri)) {
+      IdeService ide(_project);
+      for (const auto &fold:
+           ide.folding_ranges(_documents.at(*uri).path)) {
+        ranges.push_back(Json(Object{
+            {"startLine", static_cast<int>(fold.start_line)},
+            {"endLine", static_cast<int>(fold.end_line)},
+            {"kind", fold.kind == 0 ? "region" : "region"},
+        }));
+      }
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"result", ranges}}));
+    return;
+  }
+
+  if (method == "textDocument/formatting") {
+    Array edits{};
+    auto uri = parse_text_document_uri(params);
+    if (uri.has_value() && _documents.contains(*uri)) {
+      const OpenDocument &doc = _documents.at(*uri);
+      IdeService ide(_project);
+      if (auto formatted = ide.format_document(doc.path)) {
+        auto [end_line, end_col] =
+            offset_to_line_column(doc.text, doc.text.size());
+        edits.push_back(Json(Object{
+            {"range",
+             to_range(LspRange{0, 0, end_line, end_col})},
+            {"newText", *formatted},
+        }));
+      }
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"result", edits}}));
+    return;
+  }
+
+  if (method == "textDocument/prepareCallHierarchy") {
+    Json result = nullptr;
+    auto uri = parse_text_document_uri(params);
+    auto pos = parse_position(params);
+    if (uri.has_value() && pos.has_value() && _documents.contains(*uri)) {
+      IdeService ide(_project);
+      auto [line, character] = *pos;
+      if (auto item = ide.prepare_call_hierarchy(_documents.at(*uri).path, line,
+                                                 character)) {
+        result = Json(Object{
+            {"name", item->name},
+            {"kind", static_cast<int>(6)},
+            {"detail", item->detail},
+            {"uri", item->uri},
+            {"range", to_range(item->range)},
+            {"selectionRange", to_range(item->selection_range)},
+            {"data", item->data},
+        });
+      }
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}));
+    return;
+  }
+
+  if (method == "callHierarchy/incomingCalls") {
+    Array calls{};
+    if (params.is_object()) {
+      const auto &obj = params.as_object();
+      auto item_it = obj.find("item");
+      if (item_it != obj.end() && item_it->second.is_object()) {
+        const auto &item_obj = item_it->second.as_object();
+        CallHierarchyItem item{};
+        if (auto d = item_obj.find("data"); d != item_obj.end() && d->second.is_string())
+          item.data = d->second.as_string();
+        if (auto u = item_obj.find("uri"); u != item_obj.end() && u->second.is_string())
+          item.uri = u->second.as_string();
+        IdeService ide(_project);
+        for (const auto &call:
+             ide.call_hierarchy_incoming(lsp_uri_to_path(item.uri), item)) {
+          calls.push_back(Json(Object{
+              {"from",
+               Object{
+                   {"name", call.to.name},
+                   {"kind", static_cast<int>(6)},
+                   {"detail", call.to.detail},
+                   {"uri", call.to.uri},
+                   {"range", to_range(call.to.range)},
+                   {"selectionRange", to_range(call.to.selection_range)},
+                   {"data", call.to.data},
+               }},
+              {"fromRanges", Array{to_range(call.range)}},
+          }));
+        }
+      }
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"result", calls}}));
+    return;
+  }
+
+  if (method == "callHierarchy/outgoingCalls") {
+    Array calls{};
+    if (params.is_object()) {
+      const auto &obj = params.as_object();
+      auto item_it = obj.find("item");
+      if (item_it != obj.end() && item_it->second.is_object()) {
+        const auto &item_obj = item_it->second.as_object();
+        CallHierarchyItem item{};
+        if (auto d = item_obj.find("data"); d != item_obj.end() && d->second.is_string())
+          item.data = d->second.as_string();
+        if (auto u = item_obj.find("uri"); u != item_obj.end() && u->second.is_string())
+          item.uri = u->second.as_string();
+        IdeService ide(_project);
+        for (const auto &call:
+             ide.call_hierarchy_outgoing(lsp_uri_to_path(item.uri), item)) {
+          calls.push_back(Json(Object{
+              {"to",
+               Object{
+                   {"name", call.to.name},
+                   {"kind", static_cast<int>(6)},
+                   {"detail", call.to.detail},
+                   {"uri", call.to.uri},
+                   {"range", to_range(call.to.range)},
+                   {"selectionRange", to_range(call.to.selection_range)},
+                   {"data", call.to.data},
+               }},
+              {"fromRanges", Array{to_range(call.range)}},
+          }));
+        }
+      }
+    }
+    write_message(Json(Object{{"jsonrpc", "2.0"},
+                              {"id", id},
+                              {"result", calls}}));
     return;
   }
 
@@ -648,6 +870,15 @@ void LspServer::handle_request(int id, std::string_view method,
     auto pos = parse_position(params);
     if (uri.has_value() && pos.has_value() && _documents.contains(*uri) &&
         !new_name.empty()) {
+      if (!IdeService::is_valid_rename_name(new_name)) {
+        write_message(Json(Object{{"jsonrpc", "2.0"},
+                                  {"id", id},
+                                  {"error",
+                                   Object{{"code", -32602},
+                                          {"message",
+                                           "Invalid identifier for rename"}}}}));
+        return;
+      }
       IdeService ide(_project);
       auto [line, character] = *pos;
       for (const auto &[edit_uri, edits]:
@@ -667,19 +898,71 @@ void LspServer::handle_request(int id, std::string_view method,
     return;
   }
 
-  if (method == "textDocument/semanticTokens/full") {
-    Array data{};
+  if (method == "textDocument/semanticTokens/full" ||
+      method == "textDocument/semanticTokens/full/delta") {
     auto uri = parse_text_document_uri(params);
+    std::string previous_id;
+    if (params.is_object()) {
+      const auto &obj = params.as_object();
+      if (auto rid = obj.find("previousResultId");
+          rid != obj.end() && rid->second.is_string())
+        previous_id = rid->second.as_string();
+    }
+
     if (uri.has_value() && _documents.contains(*uri)) {
+      const std::string &path = _documents.at(*uri).path;
       IdeService ide(_project);
-      for (uint32_t value:
-           ide.semantic_tokens(_documents.at(*uri).path).data)
+      std::vector<uint32_t> previous =
+          _semantic_token_cache.contains(*uri)
+              ? _semantic_token_cache.at(*uri)
+              : std::vector<uint32_t>{};
+
+      if (method.ends_with("/delta") && !previous_id.empty()) {
+        auto delta = ide.semantic_tokens_delta(path, previous_id, previous);
+        _semantic_token_cache[*uri] = delta.data;
+        _semantic_token_ids[*uri] = delta.result_id;
+        if (delta.data.empty() && !delta.full_rebuild) {
+          write_message(Json(Object{{"jsonrpc", "2.0"},
+                                    {"id", id},
+                                    {"result",
+                                     Object{{"resultId", delta.result_id}}}}));
+          return;
+        }
+        Array delta_data{};
+        for (uint32_t v: delta.data)
+          delta_data.push_back(Json(static_cast<double>(v)));
+        write_message(Json(
+            Object{{"jsonrpc", "2.0"},
+                   {"id", id},
+                   {"result",
+                    Object{{"resultId", delta.result_id},
+                           {"edits",
+                            Array{Object{
+                                {"start", static_cast<int>(delta.start)},
+                                {"deleteCount",
+                                 static_cast<int>(delta.delete_count)},
+                                {"data", delta_data},
+                            }}}}}}));
+        return;
+      }
+
+      SemanticTokens tokens = ide.semantic_tokens(path);
+      _semantic_token_cache[*uri] = tokens.data;
+      std::string result_id = std::to_string(_semantic_token_ids.size() + 1);
+      _semantic_token_ids[*uri] = result_id;
+      Array data{};
+      for (uint32_t value: tokens.data)
         data.push_back(Json(static_cast<double>(value)));
+      write_message(Json(Object{{"jsonrpc", "2.0"},
+                                {"id", id},
+                                {"result",
+                                 Object{{"resultId", result_id}, {"data", data}}}}));
+      return;
     }
 
     write_message(Json(Object{{"jsonrpc", "2.0"},
                               {"id", id},
-                              {"result", Json(Object{{"data", data}})}}));
+                              {"result", Json(Object{{"data", Array{}}})}}));
     return;
   }
 
@@ -736,15 +1019,22 @@ void LspServer::handle_request(int id, std::string_view method,
   if (method == "textDocument/inlayHint") {
     Array hints{};
     auto uri = parse_text_document_uri(params);
+  std::optional<LspRange> range{};
+  if (params.is_object()) {
+    const auto &obj = params.as_object();
+    if (auto r = obj.find("range"); r != obj.end())
+      range = parse_range(r->second);
+  }
     if (uri.has_value() && _documents.contains(*uri)) {
       IdeService ide(_project);
-      for (const auto &hint: ide.inlay_hints(_documents.at(*uri).path)) {
+      for (const auto &hint:
+           ide.inlay_hints(_documents.at(*uri).path, _inlay_hint_options, range)) {
         hints.push_back(Json(Object{
             {"position", to_position(hint.line, hint.character)},
             {"label", hint.label},
             {"kind", hint.kind},
-            {"paddingLeft", false},
-            {"paddingRight", true},
+            {"paddingLeft", hint.padding_left},
+            {"paddingRight", hint.padding_right},
         }));
       }
     }
@@ -829,8 +1119,20 @@ void LspServer::handle_notification(std::string_view method,
           continue;
         const auto &change_obj = change.as_object();
         if (auto text = change_obj.find("text");
-            text != change_obj.end() && text->second.is_string())
-          _documents[uri].text = text->second.as_string();
+            text != change_obj.end() && text->second.is_string()) {
+          if (auto range_it = change_obj.find("range");
+              range_it != change_obj.end()) {
+            if (auto range = parse_range(range_it->second)) {
+              _documents[uri].text =
+                  apply_lsp_range_edit(_documents[uri].text, *range,
+                                       text->second.as_string());
+            } else {
+              _documents[uri].text = text->second.as_string();
+            }
+          } else {
+            _documents[uri].text = text->second.as_string();
+          }
+        }
       }
     }
 

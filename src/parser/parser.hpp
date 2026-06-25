@@ -11,10 +11,11 @@ public:
       _tokens(tokens), _arena(arena) {}
 
   ErrorOr<std::vector<Decl *>> parse_decls();
-
-private:
   ErrorOr<Decl *> parse_decl();
   ErrorOr<Stmt *> parse_stmt();
+  bool at_end() const;
+
+private:
   ErrorOr<Expr *> parse_expr(size_t min_prec = 0, bool allow_struct_lit = true);
   ErrorOr<Expr *> parse_postfix_expr(bool allow_struct_lit = true);
   ErrorOr<Expr *> parse_primary_expr(bool allow_struct_lit = true);
@@ -24,6 +25,7 @@ private:
 
   ErrorOr<Stmt *> parse_block_stmt();
   ErrorOr<std::vector<Stmt *>> parse_block();
+  ErrorOr<decl::ComptimeBlock *> parse_comptime_block(Token comptime);
   ErrorOr<Stmt *> parse_var_destructure(Token var, Token oparen);
   ErrorOr<Stmt *> parse_destructure_assign(Token oparen,
                                            std::vector<Token> names);
@@ -40,7 +42,7 @@ private:
 
   ErrorOr<Token> expect(TokenType type, std::string message);
   Token consume();
-  Token peek(size_t offset = 0);
+  Token peek(size_t offset = 0) const;
   Token previous();
 
 private:

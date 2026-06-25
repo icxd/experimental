@@ -237,6 +237,7 @@ int run_test_suite(Opts &opts, int argc, char **argv) {
   std::vector<std::string> roots{
       "runtime/ryert.rye",
       "std/string.rye",
+      "std/compiler.rye",
   };
   if (!project.rebuild(roots).has_value())
     return EXIT_FAILURE;

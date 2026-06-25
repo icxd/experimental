@@ -1,0 +1,28 @@
+struct ComptimeString {
+  _ int;
+}
+
+struct ComptimeStmt {
+  _ int;
+}
+
+struct ComptimeDecl {
+  _ int;
+}
+
+comptime proc parse_stmt(source ComptimeString) ComptimeStmt {
+  return ComptimeStmt{_ = 0};
+}
+
+comptime proc inject_stmt(stmt ComptimeStmt) void {
+}
+
+comptime proc parse_decl(source ComptimeString) ComptimeDecl {
+  return ComptimeDecl{_ = 0};
+}
+
+comptime proc inject_decl(decl ComptimeDecl) void {
+}
+
+comptime proc error(message ComptimeString) void {
+}

@@ -462,7 +462,8 @@ ErrorOr<void> Project::finalize_modules() {
     }
 
     Checker checker(module.module_name, module.abs_path, &_registry,
-                    module.is_runtime, _opts.import_paths, _opts.config);
+                    module.is_runtime, _opts.import_paths, _opts.config,
+                    module.arena.get());
     ErrorOr<void> check = checker.check_decls(module.decls);
     if (!check.has_value()) {
       const Error &error = check.error();

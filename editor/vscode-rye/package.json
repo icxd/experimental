@@ -1,8 +1,8 @@
 {
   "name": "rye",
   "displayName": "Rye",
-  "description": "Syntax highlighting, diagnostics, and language server for Rye",
-  "version": "0.3.3",
+  "description": "Syntax highlighting, diagnostics, and language server for Rye (go-to-definition, references, rename, completion, semantic tokens, inlay hints, document highlights, type definition, workspace symbols, folding, formatting, call hierarchy, and more)",
+  "version": "0.4.0",
   "publisher": "rye-lang",
   "license": "MIT",
   "engines": {
@@ -72,6 +72,16 @@
           "type": "boolean",
           "default": false,
           "description": "Log LSP JSON traffic to the Rye output panel (sets RYE_LSP_DEBUG)."
+        },
+        "rye.inlayHints.parameterNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show parameter name hints at call sites."
+        },
+        "rye.inlayHints.variableTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type hints for `var name = expr` declarations."
         }
       }
     },

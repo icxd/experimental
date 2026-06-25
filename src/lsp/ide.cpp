@@ -1,6 +1,10 @@
-#include <lsp/ide.hpp>
-
 #include <algorithm>
+#include <cctype>
+#include <set>
+
+#include <lsp/ide.hpp>
+#include <lsp/format.hpp>
+#include <module.hpp>
 
 namespace {
 
@@ -658,8 +662,171 @@ proc_containing_offset(const ParsedModule &module, size_t offset) {
   return std::nullopt;
 }
 
+enum class SymKind { Proc, Struct, Enum, Const, LocalVar, Param, StructField };
+
+struct Sym {
+  SymKind kind;
+  std::string module_name;
+  std::string name;
+  std::string struct_name;
+  std::string proc_name;
+  std::string file_path;
+  size_t def_start = 0;
+  size_t def_end = 0;
+  bool renamable = true;
+};
+
+bool var_has_inferred_type(std::string_view source, const stmt::Var *var) {
+  if (!var->value.has_value())
+    return false;
+  size_t pos = var->name.end;
+  while (pos < var->value.value()->start &&
+         std::isspace(static_cast<unsigned char>(source[pos])))
+    pos++;
+  return pos < var->value.value()->start && source[pos] == '=';
+}
+
+bool inlay_hint_in_range(const InlayHint &hint, const LspRange &range) {
+  if (hint.line < range.start_line || hint.line > range.end_line)
+    return false;
+  if (hint.line == range.start_line && hint.character < range.start_character)
+    return false;
+  if (hint.line == range.end_line && hint.character >= range.end_character)
+    return false;
+  return true;
+}
+
+std::optional<Sym> find_sym_in_stmts(const ParsedModule &module,
+                                     std::string_view proc_name,
+                                     const std::vector<Stmt *> &stmts,
+                                     size_t offset) {
+  for (Stmt *stmt: stmts) {
+    switch (stmt->type) {
+    case STMT_VAR: {
+      auto *var = std::get<stmt::Var *>(stmt->data);
+      if (offset_in_token(offset, var->name.start, var->name.end)) {
+        return Sym{.kind = SymKind::LocalVar,
+                   .module_name = std::string(module.module_name),
+                   .name = std::string(var->name.id_value),
+                   .proc_name = std::string(proc_name),
+                   .file_path = module.abs_path,
+                   .def_start = var->name.start,
+                   .def_end = var->name.end};
+      }
+      break;
+    }
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      if (auto sym = find_sym_in_stmts(module, proc_name, iff->then_block, offset))
+        return sym;
+      if (auto sym = find_sym_in_stmts(module, proc_name, iff->else_block, offset))
+        return sym;
+      break;
+    }
+    case STMT_WHILE: {
+      auto *loop = std::get<stmt::While *>(stmt->data);
+      if (auto sym = find_sym_in_stmts(module, proc_name, loop->body, offset))
+        return sym;
+      break;
+    }
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr) {
+        if (auto sym = find_sym_in_stmts(module, proc_name, {loop->init}, offset))
+          return sym;
+      }
+      if (auto sym = find_sym_in_stmts(module, proc_name, loop->body, offset))
+        return sym;
+      break;
+    }
+    case STMT_BLOCK: {
+      auto *block = std::get<stmt::Block *>(stmt->data);
+      if (auto sym = find_sym_in_stmts(module, proc_name, block->stmts, offset))
+        return sym;
+      break;
+    }
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      if (auto sym = find_sym_in_stmts(module, proc_name, when->true_block, offset))
+        return sym;
+      if (auto sym = find_sym_in_stmts(module, proc_name, when->false_block, offset))
+        return sym;
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<Sym> find_local_var_sym_in_stmts(const ParsedModule &module,
+                                               std::string_view proc_name,
+                                               const std::vector<Stmt *> &stmts,
+                                               std::string_view name) {
+  for (Stmt *stmt: stmts) {
+    switch (stmt->type) {
+    case STMT_VAR: {
+      auto *var = std::get<stmt::Var *>(stmt->data);
+      if (var->name.id_value == name) {
+        return Sym{.kind = SymKind::LocalVar,
+                   .module_name = std::string(module.module_name),
+                   .name = std::string(var->name.id_value),
+                   .proc_name = std::string(proc_name),
+                   .file_path = module.abs_path,
+                   .def_start = var->name.start,
+                   .def_end = var->name.end};
+      }
+      break;
+    }
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, iff->then_block, name))
+        return sym;
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, iff->else_block, name))
+        return sym;
+      break;
+    }
+    case STMT_WHILE: {
+      auto *loop = std::get<stmt::While *>(stmt->data);
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, loop->body, name))
+        return sym;
+      break;
+    }
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr) {
+        if (auto sym = find_local_var_sym_in_stmts(module, proc_name, {loop->init}, name))
+          return sym;
+      }
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, loop->body, name))
+        return sym;
+      break;
+    }
+    case STMT_BLOCK: {
+      auto *block = std::get<stmt::Block *>(stmt->data);
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, block->stmts, name))
+        return sym;
+      break;
+    }
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, when->true_block, name))
+        return sym;
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, when->false_block, name))
+        return sym;
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  return std::nullopt;
+}
+
 void collect_inlay_hints_in_expr(const Project &project, const ParsedModule &mod,
-                                 Expr *expr, std::vector<InlayHint> &out) {
+                                 Expr *expr, const IdeInlayHintOptions &options,
+                                 std::vector<InlayHint> &out) {
   if (expr == nullptr)
     return;
 
@@ -675,7 +842,7 @@ void collect_inlay_hints_in_expr(const Project &project, const ParsedModule &mod
       module_name = *call->resolved_module;
 
     auto proc = project.registry().find_proc(module_name, call->name->id_value);
-    if (proc.has_value()) {
+    if (options.parameter_names && proc.has_value()) {
       size_t paren = call->name->end;
       while (paren < mod.source.size() && mod.source[paren] != '(')
         paren++;
@@ -715,55 +882,59 @@ void collect_inlay_hints_in_expr(const Project &project, const ParsedModule &mod
     }
 
     if (call->receiver != nullptr)
-      collect_inlay_hints_in_expr(project, mod, call->receiver, out);
+      collect_inlay_hints_in_expr(project, mod, call->receiver, options, out);
     for (Expr *arg: call->arguments)
-      collect_inlay_hints_in_expr(project, mod, arg, out);
+      collect_inlay_hints_in_expr(project, mod, arg, options, out);
     return;
   }
 
   switch (expr->type) {
   case EXPR_BINARY: {
     auto *bin = std::get<expr::Binary *>(expr->data);
-    collect_inlay_hints_in_expr(project, mod, bin->lhs, out);
-    collect_inlay_hints_in_expr(project, mod, bin->rhs, out);
+    collect_inlay_hints_in_expr(project, mod, bin->lhs, options, out);
+    collect_inlay_hints_in_expr(project, mod, bin->rhs, options, out);
     return;
   }
   case EXPR_GROUP:
     collect_inlay_hints_in_expr(project, mod,
-                                std::get<expr::Group *>(expr->data)->expr, out);
+                                std::get<expr::Group *>(expr->data)->expr,
+                                options, out);
     return;
   case EXPR_NOT:
     collect_inlay_hints_in_expr(project, mod,
-                                std::get<expr::Not *>(expr->data)->expr, out);
+                                std::get<expr::Not *>(expr->data)->expr,
+                                options, out);
     return;
   case EXPR_REF:
     collect_inlay_hints_in_expr(project, mod,
-                                std::get<expr::Ref *>(expr->data)->expr, out);
+                                std::get<expr::Ref *>(expr->data)->expr,
+                                options, out);
     return;
   case EXPR_DEREF:
     collect_inlay_hints_in_expr(project, mod,
-                                std::get<expr::Deref *>(expr->data)->expr, out);
+                                std::get<expr::Deref *>(expr->data)->expr,
+                                options, out);
     return;
   case EXPR_FIELD: {
     auto *field = std::get<expr::Field *>(expr->data);
-    collect_inlay_hints_in_expr(project, mod, field->base, out);
+    collect_inlay_hints_in_expr(project, mod, field->base, options, out);
     return;
   }
   case EXPR_INDEX: {
     auto *index = std::get<expr::Index *>(expr->data);
-    collect_inlay_hints_in_expr(project, mod, index->base, out);
-    collect_inlay_hints_in_expr(project, mod, index->index, out);
+    collect_inlay_hints_in_expr(project, mod, index->base, options, out);
+    collect_inlay_hints_in_expr(project, mod, index->index, options, out);
     return;
   }
   case EXPR_CAST: {
     auto *cast_ = std::get<expr::Cast *>(expr->data);
-    collect_inlay_hints_in_expr(project, mod, cast_->expr, out);
+    collect_inlay_hints_in_expr(project, mod, cast_->expr, options, out);
     return;
   }
   case EXPR_STRUCT_LIT: {
     auto *lit = std::get<expr::StructLit *>(expr->data);
     for (const auto &f: lit->fields)
-      collect_inlay_hints_in_expr(project, mod, f.value, out);
+      collect_inlay_hints_in_expr(project, mod, f.value, options, out);
     return;
   }
   default:
@@ -773,62 +944,85 @@ void collect_inlay_hints_in_expr(const Project &project, const ParsedModule &mod
 
 void collect_inlay_hints_in_stmts(const Project &project, const ParsedModule &mod,
                                   const std::vector<Stmt *> &stmts,
+                                  const IdeInlayHintOptions &options,
                                   std::vector<InlayHint> &out) {
   for (Stmt *stmt: stmts) {
     switch (stmt->type) {
     case STMT_EXPR:
       collect_inlay_hints_in_expr(
-          project, mod, std::get<stmt::ExprStmt *>(stmt->data)->expr, out);
+          project, mod, std::get<stmt::ExprStmt *>(stmt->data)->expr, options,
+          out);
       break;
     case STMT_VAR: {
       auto *var = std::get<stmt::Var *>(stmt->data);
+      if (options.variable_types && var->value.has_value() &&
+          var_has_inferred_type(mod.source, var)) {
+        Type *type = var->type;
+        if (type == nullptr && var->value.value()->expr_type != nullptr)
+          type = var->value.value()->expr_type;
+        if (type != nullptr) {
+          auto [line, character] =
+              offset_to_line_column(mod.source, var->name.end);
+          out.push_back(InlayHint{
+              .line = line,
+              .character = character,
+              .label = std::format(": {}", type_to_string(type)),
+              .kind = 1,
+              .padding_left = false,
+              .padding_right = false,
+          });
+        }
+      }
       if (var->value.has_value())
-        collect_inlay_hints_in_expr(project, mod, var->value.value(), out);
+        collect_inlay_hints_in_expr(project, mod, var->value.value(), options,
+                                    out);
       break;
     }
     case STMT_RETURN: {
       auto *ret = std::get<stmt::Return *>(stmt->data);
       if (ret->value.has_value())
-        collect_inlay_hints_in_expr(project, mod, ret->value.value(), out);
+        collect_inlay_hints_in_expr(project, mod, ret->value.value(), options,
+                                    out);
       break;
     }
     case STMT_ASSIGN: {
       auto *assign = std::get<stmt::Assign *>(stmt->data);
-      collect_inlay_hints_in_expr(project, mod, assign->value, out);
+      collect_inlay_hints_in_expr(project, mod, assign->value, options, out);
       break;
     }
     case STMT_IF: {
       auto *iff = std::get<stmt::If *>(stmt->data);
-      collect_inlay_hints_in_expr(project, mod, iff->cond, out);
-      collect_inlay_hints_in_stmts(project, mod, iff->then_block, out);
-      collect_inlay_hints_in_stmts(project, mod, iff->else_block, out);
+      collect_inlay_hints_in_expr(project, mod, iff->cond, options, out);
+      collect_inlay_hints_in_stmts(project, mod, iff->then_block, options, out);
+      collect_inlay_hints_in_stmts(project, mod, iff->else_block, options, out);
       break;
     }
     case STMT_WHILE: {
       auto *loop = std::get<stmt::While *>(stmt->data);
-      collect_inlay_hints_in_expr(project, mod, loop->cond, out);
-      collect_inlay_hints_in_stmts(project, mod, loop->body, out);
+      collect_inlay_hints_in_expr(project, mod, loop->cond, options, out);
+      collect_inlay_hints_in_stmts(project, mod, loop->body, options, out);
       break;
     }
     case STMT_FOR: {
       auto *loop = std::get<stmt::For *>(stmt->data);
       if (loop->init != nullptr)
-        collect_inlay_hints_in_stmts(project, mod, {loop->init}, out);
-      collect_inlay_hints_in_expr(project, mod, loop->cond, out);
+        collect_inlay_hints_in_stmts(project, mod, {loop->init}, options, out);
+      collect_inlay_hints_in_expr(project, mod, loop->cond, options, out);
       if (loop->step != nullptr)
-        collect_inlay_hints_in_stmts(project, mod, {loop->step}, out);
-      collect_inlay_hints_in_stmts(project, mod, loop->body, out);
+        collect_inlay_hints_in_stmts(project, mod, {loop->step}, options, out);
+      collect_inlay_hints_in_stmts(project, mod, loop->body, options, out);
       break;
     }
     case STMT_BLOCK:
       collect_inlay_hints_in_stmts(
-          project, mod, std::get<stmt::Block *>(stmt->data)->stmts, out);
+          project, mod, std::get<stmt::Block *>(stmt->data)->stmts, options,
+          out);
       break;
     case STMT_WHEN: {
       auto *when = std::get<stmt::When *>(stmt->data);
-      collect_inlay_hints_in_expr(project, mod, when->cond, out);
-      collect_inlay_hints_in_stmts(project, mod, when->true_block, out);
-      collect_inlay_hints_in_stmts(project, mod, when->false_block, out);
+      collect_inlay_hints_in_expr(project, mod, when->cond, options, out);
+      collect_inlay_hints_in_stmts(project, mod, when->true_block, options, out);
+      collect_inlay_hints_in_stmts(project, mod, when->false_block, options, out);
       break;
     }
     default:
@@ -836,20 +1030,6 @@ void collect_inlay_hints_in_stmts(const Project &project, const ParsedModule &mo
     }
   }
 }
-
-enum class SymKind { Proc, Struct, Enum, Const, LocalVar, Param, StructField };
-
-struct Sym {
-  SymKind kind;
-  std::string module_name;
-  std::string name;
-  std::string struct_name;
-  std::string proc_name;
-  std::string file_path;
-  size_t def_start = 0;
-  size_t def_end = 0;
-  bool renamable = true;
-};
 
 std::optional<Sym> resolve_symbol(const Project &project,
                                   std::string_view abs_path, size_t line,
@@ -950,6 +1130,32 @@ std::optional<Sym> resolve_symbol(const Project &project,
     }
   }
 
+  auto enclosing_proc = proc_containing_offset(*module, offset);
+  if (enclosing_proc.has_value()) {
+    for (Decl *decl: module->decls) {
+      if (decl->type != DECL_PROC)
+        continue;
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      if (proc->name.id_value != enclosing_proc.value())
+        continue;
+      for (const Param &param: proc->params) {
+        if (offset_in_token(offset, param.name.start, param.name.end)) {
+          return Sym{.kind = SymKind::Param,
+                     .module_name = std::string(module->module_name),
+                     .name = std::string(param.name.id_value),
+                     .proc_name = std::string(proc->name.id_value),
+                     .file_path = module->abs_path,
+                     .def_start = param.name.start,
+                     .def_end = param.name.end,
+                     .renamable = !module->is_runtime};
+        }
+      }
+      if (auto sym = find_sym_in_stmts(*module, enclosing_proc.value(), proc->body,
+                                        offset))
+        return sym;
+    }
+  }
+
   Expr *expr = find_expr_in_module(*module, offset);
 
   if (expr != nullptr && expr->type == EXPR_VAR) {
@@ -972,35 +1178,28 @@ std::optional<Sym> resolve_symbol(const Project &project,
       }
     }
 
-    for (Decl *decl: module->decls) {
-      if (decl->type != DECL_PROC)
-        continue;
-      auto *proc = std::get<decl::Proc *>(decl->data);
-      for (const Param &param: proc->params) {
-        if (param.name.id_value == var->var.id_value) {
-          return Sym{.kind = SymKind::Param,
-                     .module_name = std::string(module->module_name),
-                     .name = std::string(param.name.id_value),
-                     .proc_name = std::string(proc->name.id_value),
-                     .file_path = module->abs_path,
-                     .def_start = param.name.start,
-                     .def_end = param.name.end,
-                     .renamable = !module->is_runtime};
-        }
-      }
-      for (Stmt *stmt: proc->body) {
-        if (stmt->type != STMT_VAR)
+    if (!var->module.has_value() && enclosing_proc.has_value()) {
+      for (Decl *decl: module->decls) {
+        if (decl->type != DECL_PROC)
           continue;
-        auto *local = std::get<stmt::Var *>(stmt->data);
-        if (local->name.id_value == var->var.id_value) {
-          return Sym{.kind = SymKind::LocalVar,
-                     .module_name = std::string(module->module_name),
-                     .name = std::string(local->name.id_value),
-                     .proc_name = std::string(proc->name.id_value),
-                     .file_path = module->abs_path,
-                     .def_start = local->name.start,
-                     .def_end = local->name.end};
+        auto *proc = std::get<decl::Proc *>(decl->data);
+        if (proc->name.id_value != enclosing_proc.value())
+          continue;
+        for (const Param &param: proc->params) {
+          if (param.name.id_value == var->var.id_value) {
+            return Sym{.kind = SymKind::Param,
+                       .module_name = std::string(module->module_name),
+                       .name = std::string(param.name.id_value),
+                       .proc_name = std::string(proc->name.id_value),
+                       .file_path = module->abs_path,
+                       .def_start = param.name.start,
+                       .def_end = param.name.end,
+                       .renamable = !module->is_runtime};
+          }
         }
+        if (auto local = find_local_var_sym_in_stmts(
+                *module, enclosing_proc.value(), proc->body, var->var.id_value))
+          return local;
       }
     }
   }
@@ -1314,6 +1513,9 @@ void collect_refs_in_stmts(const std::vector<Stmt *> &stmts,
     switch (stmt->type) {
     case STMT_VAR: {
       auto *var = std::get<stmt::Var *>(stmt->data);
+      if (sym.kind == SymKind::LocalVar && current_proc == sym.proc_name &&
+          var->name.id_value == sym.name)
+        push_location(out, mod, var->name.start, var->name.end);
       if (var->type != nullptr)
         collect_refs_in_type(var->type, mod, sym, out);
       if (var->value.has_value())
@@ -1750,6 +1952,568 @@ SemanticTokens encode_semantic_tokens(std::string_view source,
   return SemanticTokens{.data = std::move(data)};
 }
 
+std::optional<LspLocation> location_for_type(const Project &project, Type *type) {
+  if (type == nullptr)
+    return std::nullopt;
+  if (type->type == TYPE_PTR)
+    return location_for_type(project,
+                             std::get<type::Ptr *>(type->data)->inner);
+  if (type->type == TYPE_STRUCT) {
+    std::string_view name = std::get<type::Struct *>(type->data)->name;
+    for (const auto &[path, mod]: project.modules()) {
+      if (Decl *decl = find_top_level_decl(const_cast<ParsedModule &>(mod), name,
+                                           DECL_STRUCT)) {
+        auto *strukt = std::get<decl::Struct *>(decl->data);
+        return LspLocation{
+            .uri = lsp_path_to_uri(mod.abs_path),
+            .range = make_range(mod.source, strukt->name.start, strukt->name.end),
+        };
+      }
+    }
+  }
+  if (type->type == TYPE_ENUM) {
+    std::string_view name = std::get<type::Enum *>(type->data)->name;
+    for (const auto &[path, mod]: project.modules()) {
+      if (Decl *decl = find_top_level_decl(const_cast<ParsedModule &>(mod), name,
+                                           DECL_ENUM)) {
+        auto *enum_ = std::get<decl::Enum *>(decl->data);
+        return LspLocation{
+            .uri = lsp_path_to_uri(mod.abs_path),
+            .range = make_range(mod.source, enum_->name.start, enum_->name.end),
+        };
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<Type *> type_at_offset(const ParsedModule &module, size_t offset) {
+  for (Decl *decl: module.decls) {
+    if (decl->type == DECL_PROC) {
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      for (const Param &param: proc->params) {
+        if (offset_in_token(offset, param.type->start, param.type->end))
+          return param.type;
+      }
+      if (proc->ret_type.has_value() &&
+          offset_in_token(offset, proc->ret_type.value()->start,
+                          proc->ret_type.value()->end))
+        return proc->ret_type.value();
+    }
+    if (decl->type == DECL_STRUCT) {
+      auto *strukt = std::get<decl::Struct *>(decl->data);
+      for (const auto &field: strukt->fields) {
+        if (offset_in_token(offset, field.type->start, field.type->end))
+          return field.type;
+      }
+    }
+    if (decl->type == DECL_CONST) {
+      auto *konst = std::get<decl::Const *>(decl->data);
+      if (offset_in_token(offset, konst->type->start, konst->type->end))
+        return konst->type;
+    }
+  }
+
+  auto enclosing = proc_containing_offset(module, offset);
+  if (enclosing.has_value()) {
+    for (Decl *decl: module.decls) {
+      if (decl->type != DECL_PROC)
+        continue;
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      if (proc->name.id_value != enclosing.value())
+        continue;
+      for (Stmt *stmt: proc->body) {
+        if (stmt->type == STMT_VAR) {
+          auto *var = std::get<stmt::Var *>(stmt->data);
+          if (var->type != nullptr &&
+              offset_in_token(offset, var->type->start, var->type->end))
+            return var->type;
+        }
+      }
+    }
+  }
+
+  Expr *expr = find_expr_in_module(module, offset);
+  if (expr != nullptr && expr->expr_type != nullptr)
+    return expr->expr_type;
+
+  return std::nullopt;
+}
+
+void collect_folding_in_stmts(const ParsedModule &mod,
+                              const std::vector<Stmt *> &stmts,
+                              std::vector<FoldingRange> &out) {
+  for (Stmt *stmt: stmts) {
+    auto [start_line, _] = offset_to_line_column(mod.source, stmt->start);
+    auto [end_line, __] = offset_to_line_column(mod.source, stmt->end);
+    switch (stmt->type) {
+    case STMT_BLOCK:
+    case STMT_IF:
+    case STMT_WHILE:
+    case STMT_FOR:
+    case STMT_COMPTIME_BLOCK:
+      if (end_line > start_line)
+        out.push_back(FoldingRange{.start_line = start_line,
+                                   .end_line = end_line,
+                                   .kind = 0});
+      break;
+    default:
+      break;
+    }
+
+    switch (stmt->type) {
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      collect_folding_in_stmts(mod, iff->then_block, out);
+      collect_folding_in_stmts(mod, iff->else_block, out);
+      break;
+    }
+    case STMT_WHILE:
+      collect_folding_in_stmts(
+          mod, std::get<stmt::While *>(stmt->data)->body, out);
+      break;
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr)
+        collect_folding_in_stmts(mod, {loop->init}, out);
+      collect_folding_in_stmts(mod, loop->body, out);
+      break;
+    }
+    case STMT_BLOCK:
+      collect_folding_in_stmts(mod,
+                               std::get<stmt::Block *>(stmt->data)->stmts, out);
+      break;
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      collect_folding_in_stmts(mod, when->true_block, out);
+      collect_folding_in_stmts(mod, when->false_block, out);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+}
+
+void collect_calls_in_expr(const Project &project, Expr *expr,
+                           const ParsedModule &mod, std::string_view caller_proc,
+                           std::string_view callee_module,
+                           std::string_view callee_name,
+                           std::vector<CallHierarchyCall> &out) {
+  if (expr == nullptr)
+    return;
+  if (expr->type == EXPR_CALL) {
+    auto *call = std::get<expr::Call *>(expr->data);
+    if (call->name.has_value()) {
+      std::string_view use_module = mod.module_name;
+      if (call->module.has_value())
+        use_module = call->module->id_value;
+      else if (call->resolved_module.has_value())
+        use_module = *call->resolved_module;
+      if (use_module == callee_module && call->name->id_value == callee_name &&
+          call->name.has_value()) {
+        CallHierarchyItem target{};
+        if (auto proc = project.registry().find_proc(callee_module, callee_name);
+            proc.has_value()) {
+          for (const auto &[path, m]: project.modules()) {
+            if (m.module_name != callee_module)
+              continue;
+            for (Decl *decl: m.decls) {
+              if (decl->type != DECL_PROC)
+                continue;
+              auto *p = std::get<decl::Proc *>(decl->data);
+              if (p->name.id_value != callee_name)
+                continue;
+              target = CallHierarchyItem{
+                  .name = std::string(callee_name),
+                  .detail = proc_signature(*proc),
+                  .uri = lsp_path_to_uri(m.abs_path),
+                  .range = make_range(m.source, p->name.start, p->name.end),
+                  .selection_range =
+                      make_range(m.source, p->name.start, p->name.end),
+                  .data = std::format("{}:{}", callee_module, callee_name),
+              };
+            }
+          }
+        }
+        if (!target.uri.empty()) {
+          out.push_back(CallHierarchyCall{
+              .range = make_range(mod.source, call->name->start, call->name->end),
+              .to = std::move(target),
+          });
+        }
+      }
+    }
+    for (Expr *arg: call->arguments)
+      collect_calls_in_expr(project, arg, mod, caller_proc, callee_module,
+                            callee_name, out);
+    if (call->receiver != nullptr)
+      collect_calls_in_expr(project, call->receiver, mod, caller_proc,
+                            callee_module, callee_name, out);
+    return;
+  }
+  switch (expr->type) {
+  case EXPR_BINARY: {
+    auto *bin = std::get<expr::Binary *>(expr->data);
+    collect_calls_in_expr(project, bin->lhs, mod, caller_proc, callee_module,
+                          callee_name, out);
+    collect_calls_in_expr(project, bin->rhs, mod, caller_proc, callee_module,
+                          callee_name, out);
+    break;
+  }
+  case EXPR_GROUP:
+    collect_calls_in_expr(project, std::get<expr::Group *>(expr->data)->expr,
+                          mod, caller_proc, callee_module, callee_name, out);
+    break;
+  case EXPR_NOT:
+    collect_calls_in_expr(project, std::get<expr::Not *>(expr->data)->expr, mod,
+                          caller_proc, callee_module, callee_name, out);
+    break;
+  case EXPR_REF:
+    collect_calls_in_expr(project, std::get<expr::Ref *>(expr->data)->expr,
+                          mod, caller_proc, callee_module, callee_name, out);
+    break;
+  case EXPR_DEREF:
+    collect_calls_in_expr(project, std::get<expr::Deref *>(expr->data)->expr,
+                          mod, caller_proc, callee_module, callee_name, out);
+    break;
+  case EXPR_FIELD:
+    collect_calls_in_expr(project,
+                          std::get<expr::Field *>(expr->data)->base, mod,
+                          caller_proc, callee_module, callee_name, out);
+    break;
+  case EXPR_INDEX: {
+    auto *index = std::get<expr::Index *>(expr->data);
+    collect_calls_in_expr(project, index->base, mod, caller_proc, callee_module,
+                          callee_name, out);
+    collect_calls_in_expr(project, index->index, mod, caller_proc,
+                          callee_module, callee_name, out);
+    break;
+  }
+  case EXPR_CAST:
+    collect_calls_in_expr(project, std::get<expr::Cast *>(expr->data)->expr,
+                          mod, caller_proc, callee_module, callee_name, out);
+    break;
+  case EXPR_STRUCT_LIT: {
+    auto *lit = std::get<expr::StructLit *>(expr->data);
+    for (const auto &f: lit->fields)
+      collect_calls_in_expr(project, f.value, mod, caller_proc, callee_module,
+                            callee_name, out);
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+void collect_calls_in_stmts(const Project &project, const ParsedModule &mod,
+                            const std::vector<Stmt *> &stmts,
+                            std::string_view caller_proc,
+                            std::string_view callee_module,
+                            std::string_view callee_name,
+                            std::vector<CallHierarchyCall> &out) {
+  for (Stmt *stmt: stmts) {
+    switch (stmt->type) {
+    case STMT_EXPR:
+      collect_calls_in_expr(
+          project, std::get<stmt::ExprStmt *>(stmt->data)->expr, mod,
+          caller_proc, callee_module, callee_name, out);
+      break;
+    case STMT_VAR: {
+      auto *var = std::get<stmt::Var *>(stmt->data);
+      if (var->value.has_value())
+        collect_calls_in_expr(project, var->value.value(), mod, caller_proc,
+                              callee_module, callee_name, out);
+      break;
+    }
+    case STMT_RETURN: {
+      auto *ret = std::get<stmt::Return *>(stmt->data);
+      if (ret->value.has_value())
+        collect_calls_in_expr(project, ret->value.value(), mod, caller_proc,
+                              callee_module, callee_name, out);
+      break;
+    }
+    case STMT_ASSIGN:
+      collect_calls_in_expr(project,
+                            std::get<stmt::Assign *>(stmt->data)->value, mod,
+                            caller_proc, callee_module, callee_name, out);
+      break;
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      collect_calls_in_expr(project, iff->cond, mod, caller_proc, callee_module,
+                            callee_name, out);
+      collect_calls_in_stmts(project, mod, iff->then_block, caller_proc,
+                             callee_module, callee_name, out);
+      collect_calls_in_stmts(project, mod, iff->else_block, caller_proc,
+                             callee_module, callee_name, out);
+      break;
+    }
+    case STMT_WHILE: {
+      auto *loop = std::get<stmt::While *>(stmt->data);
+      collect_calls_in_expr(project, loop->cond, mod, caller_proc, callee_module,
+                            callee_name, out);
+      collect_calls_in_stmts(project, mod, loop->body, caller_proc,
+                             callee_module, callee_name, out);
+      break;
+    }
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr)
+        collect_calls_in_stmts(project, mod, {loop->init}, caller_proc,
+                             callee_module, callee_name, out);
+      collect_calls_in_expr(project, loop->cond, mod, caller_proc, callee_module,
+                            callee_name, out);
+      if (loop->step != nullptr)
+        collect_calls_in_stmts(project, mod, {loop->step}, caller_proc,
+                             callee_module, callee_name, out);
+      collect_calls_in_stmts(project, mod, loop->body, caller_proc,
+                             callee_module, callee_name, out);
+      break;
+    }
+    case STMT_BLOCK:
+      collect_calls_in_stmts(
+          project, mod, std::get<stmt::Block *>(stmt->data)->stmts, caller_proc,
+          callee_module, callee_name, out);
+      break;
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      collect_calls_in_expr(project, when->cond, mod, caller_proc, callee_module,
+                            callee_name, out);
+      collect_calls_in_stmts(project, mod, when->true_block, caller_proc,
+                             callee_module, callee_name, out);
+      collect_calls_in_stmts(project, mod, when->false_block, caller_proc,
+                             callee_module, callee_name, out);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+}
+
+void collect_outgoing_calls_expr(const Project &project, const ParsedModule &mod,
+                                 Expr *expr,
+                                 std::vector<CallHierarchyCall> &out,
+                                 std::set<std::string> &seen) {
+  if (expr == nullptr)
+    return;
+  if (expr->type == EXPR_CALL) {
+    auto *call = std::get<expr::Call *>(expr->data);
+    if (call->name.has_value()) {
+      std::string_view use_module = mod.module_name;
+      if (call->module.has_value())
+        use_module = call->module->id_value;
+      else if (call->resolved_module.has_value())
+        use_module = *call->resolved_module;
+      std::string key =
+          std::format("{}:{}", use_module, call->name->id_value);
+      if (!seen.contains(key)) {
+        if (auto proc =
+                project.registry().find_proc(use_module, call->name->id_value);
+            proc.has_value()) {
+          CallHierarchyItem target{};
+          for (const auto &[path, m]: project.modules()) {
+            if (m.module_name != use_module)
+              continue;
+            for (Decl *d: m.decls) {
+              if (d->type != DECL_PROC)
+                continue;
+              auto *p = std::get<decl::Proc *>(d->data);
+              if (p->name.id_value != call->name->id_value)
+                continue;
+              target = CallHierarchyItem{
+                  .name = std::string(call->name->id_value),
+                  .detail = proc_signature(*proc),
+                  .uri = lsp_path_to_uri(m.abs_path),
+                  .range = make_range(m.source, p->name.start, p->name.end),
+                  .selection_range =
+                      make_range(m.source, p->name.start, p->name.end),
+                  .data = key,
+              };
+            }
+          }
+          if (!target.uri.empty()) {
+            seen.insert(key);
+            out.push_back(CallHierarchyCall{
+                .range =
+                    make_range(mod.source, call->name->start, call->name->end),
+                .to = std::move(target),
+            });
+          }
+        }
+      }
+    }
+    for (Expr *arg: call->arguments)
+      collect_outgoing_calls_expr(project, mod, arg, out, seen);
+    if (call->receiver != nullptr)
+      collect_outgoing_calls_expr(project, mod, call->receiver, out, seen);
+    return;
+  }
+  switch (expr->type) {
+  case EXPR_BINARY: {
+    auto *bin = std::get<expr::Binary *>(expr->data);
+    collect_outgoing_calls_expr(project, mod, bin->lhs, out, seen);
+    collect_outgoing_calls_expr(project, mod, bin->rhs, out, seen);
+    break;
+  }
+  case EXPR_GROUP:
+    collect_outgoing_calls_expr(project, mod,
+                                std::get<expr::Group *>(expr->data)->expr, out,
+                                seen);
+    break;
+  case EXPR_NOT:
+    collect_outgoing_calls_expr(project, mod,
+                                std::get<expr::Not *>(expr->data)->expr, out,
+                                seen);
+    break;
+  case EXPR_REF:
+    collect_outgoing_calls_expr(project, mod,
+                                std::get<expr::Ref *>(expr->data)->expr, out,
+                                seen);
+    break;
+  case EXPR_DEREF:
+    collect_outgoing_calls_expr(project, mod,
+                                std::get<expr::Deref *>(expr->data)->expr, out,
+                                seen);
+    break;
+  case EXPR_FIELD:
+    collect_outgoing_calls_expr(project, mod,
+                                std::get<expr::Field *>(expr->data)->base, out,
+                                seen);
+    break;
+  case EXPR_INDEX: {
+    auto *index = std::get<expr::Index *>(expr->data);
+    collect_outgoing_calls_expr(project, mod, index->base, out, seen);
+    collect_outgoing_calls_expr(project, mod, index->index, out, seen);
+    break;
+  }
+  case EXPR_CAST:
+    collect_outgoing_calls_expr(project, mod,
+                                std::get<expr::Cast *>(expr->data)->expr, out,
+                                seen);
+    break;
+  case EXPR_STRUCT_LIT: {
+    auto *lit = std::get<expr::StructLit *>(expr->data);
+    for (const auto &f: lit->fields)
+      collect_outgoing_calls_expr(project, mod, f.value, out, seen);
+    break;
+  }
+  default:
+    break;
+  }
+}
+
+void collect_outgoing_calls_in_stmts(const Project &project,
+                                     const ParsedModule &mod,
+                                     const std::vector<Stmt *> &stmts,
+                                     std::vector<CallHierarchyCall> &out,
+                                     std::set<std::string> &seen) {
+  for (Stmt *stmt: stmts) {
+    switch (stmt->type) {
+    case STMT_EXPR:
+      collect_outgoing_calls_expr(
+          project, mod, std::get<stmt::ExprStmt *>(stmt->data)->expr, out,
+          seen);
+      break;
+    case STMT_VAR: {
+      auto *var = std::get<stmt::Var *>(stmt->data);
+      if (var->value.has_value())
+        collect_outgoing_calls_expr(project, mod, var->value.value(), out,
+                                  seen);
+      break;
+    }
+    case STMT_RETURN: {
+      auto *ret = std::get<stmt::Return *>(stmt->data);
+      if (ret->value.has_value())
+        collect_outgoing_calls_expr(project, mod, ret->value.value(), out,
+                                  seen);
+      break;
+    }
+    case STMT_ASSIGN:
+      collect_outgoing_calls_expr(
+          project, mod, std::get<stmt::Assign *>(stmt->data)->value, out, seen);
+      break;
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      collect_outgoing_calls_expr(project, mod, iff->cond, out, seen);
+      collect_outgoing_calls_in_stmts(project, mod, iff->then_block, out, seen);
+      collect_outgoing_calls_in_stmts(project, mod, iff->else_block, out, seen);
+      break;
+    }
+    case STMT_WHILE: {
+      auto *loop = std::get<stmt::While *>(stmt->data);
+      collect_outgoing_calls_expr(project, mod, loop->cond, out, seen);
+      collect_outgoing_calls_in_stmts(project, mod, loop->body, out, seen);
+      break;
+    }
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr)
+        collect_outgoing_calls_in_stmts(project, mod, {loop->init}, out, seen);
+      collect_outgoing_calls_expr(project, mod, loop->cond, out, seen);
+      if (loop->step != nullptr)
+        collect_outgoing_calls_in_stmts(project, mod, {loop->step}, out, seen);
+      collect_outgoing_calls_in_stmts(project, mod, loop->body, out, seen);
+      break;
+    }
+    case STMT_BLOCK:
+      collect_outgoing_calls_in_stmts(
+          project, mod, std::get<stmt::Block *>(stmt->data)->stmts, out, seen);
+      break;
+    case STMT_WHEN: {
+      auto *when = std::get<stmt::When *>(stmt->data);
+      collect_outgoing_calls_expr(project, mod, when->cond, out, seen);
+      collect_outgoing_calls_in_stmts(project, mod, when->true_block, out,
+                                    seen);
+      collect_outgoing_calls_in_stmts(project, mod, when->false_block, out,
+                                    seen);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+}
+
+void collect_incoming_calls(const Project &project, std::string_view callee_module,
+                            std::string_view callee_name,
+                            std::vector<CallHierarchyCall> &out) {
+  for (const auto &[path, mod]: project.modules()) {
+    for (Decl *decl: mod.decls) {
+      if (decl->type != DECL_PROC)
+        continue;
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      std::vector<CallHierarchyCall> hits{};
+      collect_calls_in_stmts(project, mod, proc->body, proc->name.id_value,
+                             callee_module, callee_name, hits);
+      for (auto &hit: hits) {
+        CallHierarchyItem from{
+            .name = std::string(proc->name.id_value),
+            .detail = std::string(mod.module_name),
+            .uri = lsp_path_to_uri(mod.abs_path),
+            .range = make_range(mod.source, proc->name.start, proc->name.end),
+            .selection_range =
+                make_range(mod.source, proc->name.start, proc->name.end),
+            .data = std::format("{}:{}", mod.module_name, proc->name.id_value),
+        };
+        out.push_back(CallHierarchyCall{.range = hit.range, .to = std::move(from)});
+      }
+    }
+  }
+}
+
+bool symbol_name_matches(std::string_view name, std::string_view query) {
+  if (query.empty())
+    return true;
+  std::string lower_name(name);
+  std::string lower_query(query);
+  for (char &c: lower_name)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  for (char &c: lower_query)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return lower_name.contains(lower_query);
+}
+
 } // namespace
 
 std::string lsp_path_to_uri(std::string_view path) {
@@ -1986,6 +2750,31 @@ IdeService::completion(std::string_view abs_path, size_t line,
       return;
     items.push_back(std::move(item));
   };
+
+  size_t line_start = offset;
+  while (line_start > 0 && module->source[line_start - 1] != '\n')
+    line_start--;
+  std::string line_prefix_str =
+      std::string(module->source.substr(line_start, offset - line_start));
+  if (line_prefix_str.find("import") != std::string::npos) {
+    size_t quote = module->source.rfind('"', offset);
+    if (quote != std::string::npos && quote >= line_start) {
+      std::string partial =
+          std::string(module->source.substr(quote + 1, offset - quote - 1));
+      for (const auto &[p, mod]: _project.modules()) {
+        std::string path = mod.rel_path;
+        if (!partial.empty() && !path.starts_with(partial))
+          continue;
+        add_unique(CompletionItem{
+            .label = path,
+            .detail = "import",
+            .insert_text = path,
+            .kind = 9,
+        });
+      }
+      return items;
+    }
+  }
 
   if (is_after_dot(module->source, offset)) {
     Expr *expr = find_expr_in_module(*module, offset);
@@ -2254,6 +3043,9 @@ IdeService::prepare_rename(std::string_view abs_path, size_t line,
 std::map<std::string, std::vector<std::pair<LspRange, std::string>>>
 IdeService::rename(std::string_view abs_path, size_t line, size_t character,
                    std::string_view new_name) const {
+  if (!is_valid_rename_name(new_name))
+    return {};
+
   auto sym = resolve_symbol(_project, abs_path, line, character);
   if (!sym.has_value() || !sym->renamable)
     return {};
@@ -2367,10 +3159,51 @@ IdeService::code_actions(std::string_view abs_path,
     }
   }
 
+  if (range.start_line == range.end_line) {
+    auto word = word_at(*module, range.start_line, range.start_character);
+    if (word.has_value()) {
+      for (const auto &entry: _project.registry().modules()) {
+        if (entry.first == module->module_name)
+          continue;
+        for (const auto &proc: entry.second.procs) {
+          if (proc.name != word.value())
+            continue;
+          std::string import_path = entry.second.path;
+          add_unique(CodeAction{
+              .title = std::format("Import `{}` from `{}`", proc.name,
+                                   entry.first),
+              .kind = "quickfix",
+              .range = range,
+              .edits =
+                  {{make_range(module->source, 0, 0),
+                    std::format("import \"{}\";\n", import_path)}},
+              .is_preferred = true,
+          });
+        }
+        for (const auto &konst: entry.second.consts) {
+          if (konst.name != word.value())
+            continue;
+          std::string import_path = entry.second.path;
+          add_unique(CodeAction{
+              .title = std::format("Import `{}` from `{}`", konst.name,
+                                   entry.first),
+              .kind = "quickfix",
+              .range = range,
+              .edits =
+                  {{make_range(module->source, 0, 0),
+                    std::format("import \"{}\";\n", import_path)}},
+          });
+        }
+      }
+    }
+  }
+
   return actions;
 }
 
-std::vector<InlayHint> IdeService::inlay_hints(std::string_view abs_path) const {
+std::vector<InlayHint> IdeService::inlay_hints(
+    std::string_view abs_path, const IdeInlayHintOptions &options,
+    const std::optional<LspRange> &range) const {
   const ParsedModule *module = module_for_path(_project, abs_path);
   if (module == nullptr)
     return {};
@@ -2379,12 +3212,267 @@ std::vector<InlayHint> IdeService::inlay_hints(std::string_view abs_path) const 
   for (Decl *decl: module->decls) {
     if (decl->type == DECL_PROC) {
       auto *proc = std::get<decl::Proc *>(decl->data);
-      collect_inlay_hints_in_stmts(_project, *module, proc->body, hints);
+      collect_inlay_hints_in_stmts(_project, *module, proc->body, options,
+                                  hints);
     } else if (decl->type == DECL_CONST) {
       auto *konst = std::get<decl::Const *>(decl->data);
-      collect_inlay_hints_in_expr(_project, *module, konst->value, hints);
+      collect_inlay_hints_in_expr(_project, *module, konst->value, options,
+                                  hints);
     }
   }
 
-  return hints;
+  if (!range.has_value())
+    return hints;
+
+  std::vector<InlayHint> filtered{};
+  for (const InlayHint &hint: hints) {
+    if (inlay_hint_in_range(hint, *range))
+      filtered.push_back(hint);
+  }
+  return filtered;
+}
+
+bool IdeService::is_valid_rename_name(std::string_view name) {
+  if (name.empty())
+    return false;
+  unsigned char first = static_cast<unsigned char>(name[0]);
+  if (!std::isalpha(first) && name[0] != '_')
+    return false;
+  for (size_t i = 1; i < name.size(); i++) {
+    unsigned char ch = static_cast<unsigned char>(name[i]);
+    if (!std::isalnum(ch) && name[i] != '_')
+      return false;
+  }
+  static constexpr std::string_view keywords[] = {
+      "proc", "var", "const", "if", "else", "for", "while", "return",
+      "import", "struct", "enum", "union", "extern", "comptime", "when",
+      "break", "continue", "cast", "sizeof", "true", "false"};
+  for (std::string_view keyword: keywords) {
+    if (name == keyword)
+      return false;
+  }
+  return true;
+}
+
+std::vector<WorkspaceSymbol>
+IdeService::workspace_symbols(std::string_view query) const {
+  std::vector<WorkspaceSymbol> out{};
+  for (const auto &[path, module]: _project.modules()) {
+    auto add = [&](const std::string &name, int kind, size_t start, size_t end,
+                   const std::string &container) {
+      if (!symbol_name_matches(name, query))
+        return;
+      out.push_back(WorkspaceSymbol{
+          .name = name,
+          .container_name = container,
+          .kind = kind,
+          .location =
+              LspLocation{.uri = lsp_path_to_uri(module.abs_path),
+                          .range = make_range(module.source, start, end)},
+      });
+    };
+    for (Decl *decl: module.decls) {
+      switch (decl->type) {
+      case DECL_PROC: {
+        auto *proc = std::get<decl::Proc *>(decl->data);
+        add(std::string(proc->name.id_value), 12, proc->name.start,
+            proc->name.end, module.module_name);
+        break;
+      }
+      case DECL_STRUCT: {
+        auto *strukt = std::get<decl::Struct *>(decl->data);
+        add(std::string(strukt->name.id_value), 22, strukt->name.start,
+            strukt->name.end, module.module_name);
+        for (const auto &field: strukt->fields)
+          add(std::string(field.name.id_value), 8, field.name.start,
+              field.name.end, std::string(strukt->name.id_value));
+        break;
+      }
+      case DECL_ENUM: {
+        auto *enum_ = std::get<decl::Enum *>(decl->data);
+        add(std::string(enum_->name.id_value), 10, enum_->name.start,
+            enum_->name.end, module.module_name);
+        break;
+      }
+      case DECL_CONST: {
+        auto *konst = std::get<decl::Const *>(decl->data);
+        add(std::string(konst->name.id_value), 14, konst->name.start,
+            konst->name.end, module.module_name);
+        break;
+      }
+      default:
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+std::optional<LspLocation> IdeService::type_definition(std::string_view abs_path,
+                                                      size_t line,
+                                                      size_t character) const {
+  const ParsedModule *module = module_for_path(_project, abs_path);
+  if (module == nullptr)
+    return std::nullopt;
+
+  size_t offset = position_to_offset(module->source, line, character);
+  if (auto type = type_at_offset(*module, offset))
+    return location_for_type(_project, *type);
+
+  return std::nullopt;
+}
+
+std::vector<DocumentHighlight>
+IdeService::document_highlight(std::string_view abs_path, size_t line,
+                               size_t character) const {
+  std::vector<DocumentHighlight> out{};
+  for (const auto &loc: references(abs_path, line, character, true)) {
+    if (lsp_uri_to_path(loc.uri) != abs_path)
+      continue;
+    out.push_back(DocumentHighlight{.range = loc.range, .kind = 1});
+  }
+  return out;
+}
+
+std::vector<FoldingRange>
+IdeService::folding_ranges(std::string_view abs_path) const {
+  const ParsedModule *module = module_for_path(_project, abs_path);
+  if (module == nullptr)
+    return {};
+
+  std::vector<FoldingRange> out{};
+  for (Decl *decl: module->decls) {
+    if (decl->type == DECL_PROC) {
+      auto *proc = std::get<decl::Proc *>(decl->data);
+      auto [start_line, _] =
+          offset_to_line_column(module->source, decl->start);
+      auto [end_line, __] = offset_to_line_column(module->source, decl->end);
+      if (end_line > start_line)
+        out.push_back(FoldingRange{.start_line = start_line,
+                                   .end_line = end_line,
+                                   .kind = 0});
+      collect_folding_in_stmts(*module, proc->body, out);
+    }
+  }
+  return out;
+}
+
+std::optional<std::string>
+IdeService::format_document(std::string_view abs_path) const {
+  const ParsedModule *module = module_for_path(_project, abs_path);
+  if (module == nullptr)
+    return std::nullopt;
+  return format_rye_source(module->source);
+}
+
+SemanticTokens IdeService::semantic_tokens_range(std::string_view abs_path,
+                                                 const LspRange &range) const {
+  return semantic_tokens(abs_path);
+}
+
+SemanticTokensDelta IdeService::semantic_tokens_delta(
+    std::string_view abs_path, std::string_view previous_id,
+    const std::vector<uint32_t> &previous_data) const {
+  SemanticTokens current = semantic_tokens(abs_path);
+  std::string new_id =
+      previous_id.empty() ? "1" : std::string(previous_id);
+  if (!previous_id.empty()) {
+    try {
+      new_id = std::to_string(std::stoll(std::string(previous_id)) + 1);
+    } catch (...) {
+      new_id = "1";
+    }
+  }
+
+  if (previous_data == current.data && !previous_id.empty()) {
+    return SemanticTokensDelta{.result_id = std::string(previous_id),
+                                 .full_rebuild = false};
+  }
+
+  return SemanticTokensDelta{
+      .result_id = new_id,
+      .data = current.data,
+      .start = 0,
+      .delete_count = previous_data.size(),
+      .full_rebuild = false,
+  };
+}
+
+std::optional<CallHierarchyItem>
+IdeService::prepare_call_hierarchy(std::string_view abs_path, size_t line,
+                                   size_t character) const {
+  auto sym = resolve_symbol(_project, abs_path, line, character);
+  if (!sym.has_value() || sym->kind != SymKind::Proc)
+    return std::nullopt;
+
+  const ParsedModule *module = module_for_path(_project, sym->file_path);
+  if (module == nullptr)
+    return std::nullopt;
+
+  auto proc = _project.registry().find_proc(sym->module_name, sym->name);
+  std::string detail =
+      proc.has_value() ? proc_signature(*proc) : sym->name;
+
+  return CallHierarchyItem{
+      .name = sym->name,
+      .detail = detail,
+      .uri = lsp_path_to_uri(sym->file_path),
+      .range = make_range(module->source, sym->def_start, sym->def_end),
+      .selection_range =
+          make_range(module->source, sym->def_start, sym->def_end),
+      .data = std::format("{}:{}", sym->module_name, sym->name),
+  };
+}
+
+std::vector<CallHierarchyCall>
+IdeService::call_hierarchy_incoming(std::string_view /*abs_path*/,
+                                    const CallHierarchyItem &item) const {
+  std::vector<CallHierarchyCall> out{};
+  auto colon = item.data.find(':');
+  if (colon == std::string::npos)
+    return out;
+  std::string_view module_name(item.data.data(), colon);
+  std::string_view proc_name(item.data.data() + colon + 1,
+                             item.data.size() - colon - 1);
+  collect_incoming_calls(_project, module_name, proc_name, out);
+  return out;
+}
+
+std::vector<CallHierarchyCall>
+IdeService::call_hierarchy_outgoing(std::string_view /*abs_path*/,
+                                    const CallHierarchyItem &item) const {
+  const ParsedModule *module =
+      module_for_path(_project, lsp_uri_to_path(item.uri));
+  if (module == nullptr)
+    return {};
+
+  auto colon = item.data.find(':');
+  if (colon == std::string::npos)
+    return {};
+
+  std::string_view proc_name(item.data.data() + colon + 1,
+                             item.data.size() - colon - 1);
+
+  std::vector<CallHierarchyCall> out{};
+  std::set<std::string> seen{};
+  for (Decl *decl: module->decls) {
+    if (decl->type != DECL_PROC)
+      continue;
+    auto *proc = std::get<decl::Proc *>(decl->data);
+    if (proc->name.id_value != proc_name)
+      continue;
+    collect_outgoing_calls_in_stmts(_project, *module, proc->body, out, seen);
+    break;
+  }
+  return out;
+}
+
+std::string apply_lsp_range_edit(std::string_view source, const LspRange &range,
+                                 std::string_view new_text) {
+  size_t start =
+      position_to_offset(source, range.start_line, range.start_character);
+  size_t end =
+      position_to_offset(source, range.end_line, range.end_character);
+  return std::string(source.substr(0, start)) + std::string(new_text) +
+         std::string(source.substr(end));
 }
