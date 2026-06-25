@@ -62,6 +62,10 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_IMPORT;
     else if (id == "struct")
       type = TOK_STRUCT;
+    else if (id == "enum")
+      type = TOK_ENUM;
+    else if (id == "union")
+      type = TOK_UNION;
     else if (id == "sizeof")
       type = TOK_SIZEOF;
     else if (id == "cast")

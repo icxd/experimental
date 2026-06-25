@@ -214,13 +214,13 @@ ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
   try$(inject_define_consts());
 
   for (Decl *decl: decls) {
-    if (decl->type == DECL_STRUCT)
+    if (decl->type == DECL_STRUCT || decl->type == DECL_ENUM)
       try$(check_decl(decl, _global_scope));
   }
 
   for (size_t i = 0; i < decls.size();) {
     Decl *decl = decls[i];
-    if (decl->type == DECL_STRUCT) {
+    if (decl->type == DECL_STRUCT || decl->type == DECL_ENUM) {
       ++i;
       continue;
     }
@@ -366,6 +366,11 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
     decl::Struct *strukt = std::get<decl::Struct *>(decl->data);
     return check_struct(strukt, decl->start, decl->end);
   }
+
+  case DECL_ENUM: {
+    decl::Enum *enum_ = std::get<decl::Enum *>(decl->data);
+    return check_enum(enum_, decl->start, decl->end);
+  }
   }
   std::unreachable();
 }
@@ -373,7 +378,8 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
 ErrorOr<void> Checker::check_struct(decl::Struct *strukt, size_t start,
                                     size_t end) {
   std::string_view name = strukt->name.id_value;
-  if (find_local_struct(name).has_value()) {
+  if (find_local_struct(name).has_value() ||
+      find_local_enum(name).has_value()) {
     return std::unexpected(
         Error(std::format("Redeclaration of struct `{}`", name), start, end));
   }
@@ -391,6 +397,7 @@ ErrorOr<void> Checker::check_struct(decl::Struct *strukt, size_t start,
     }
 
     Type *field_type = try$(check_type(field.type, _global_scope));
+    const_cast<decl::StructField &>(field).type = field_type;
     field_names.insert(field_name);
     fields.push_back(CheckedStructField{field_name, field_type, offset});
     offset += type_size(field_type);
@@ -398,6 +405,96 @@ ErrorOr<void> Checker::check_struct(decl::Struct *strukt, size_t start,
 
   _structs.push_back(CheckedStruct{name, fields, offset});
   return {};
+}
+
+ErrorOr<void> Checker::check_enum(decl::Enum *enum_, size_t start, size_t end) {
+  std::string_view name = enum_->name.id_value;
+  if (find_local_enum(name).has_value() ||
+      find_local_struct(name).has_value()) {
+    return std::unexpected(
+        Error(std::format("Redeclaration of enum `{}`", name), start, end));
+  }
+
+  Type *underlying = nullptr;
+  if (enum_->underlying != nullptr) {
+    underlying = try$(check_type(enum_->underlying, _global_scope));
+    if (underlying->type != TYPE_INT && underlying->type != TYPE_BYTE) {
+      return std::unexpected(
+          Error("Enum underlying type must be `int` or `byte`", start, end));
+    }
+  } else {
+    underlying = new Type{TYPE_INT, start, end};
+  }
+
+  std::set<std::string_view> member_names{};
+  std::vector<CheckedEnumMember> members{};
+  int64_t next_value = 0;
+  for (const decl::EnumMember &member: enum_->members) {
+    std::string_view member_name = member.name.id_value;
+    if (member_names.contains(member_name)) {
+      return std::unexpected(
+          Error(std::format("Duplicate enum member `{}` in `{}`", member_name,
+                            name),
+                member.name.start, member.name.end));
+    }
+    member_names.insert(member_name);
+
+    if (member.value.has_value()) {
+      Expr *value = try$(evaluate_constant(member.value.value(), _global_scope));
+      Type *value_type = try$(check_expr(value, _global_scope));
+      if (!type_eq(value_type, underlying)) {
+        if (underlying->type == TYPE_BYTE && value_type->type == TYPE_INT &&
+            value->type == EXPR_INT) {
+          int64_t int_value = std::get<expr::Int *>(value->data)->value;
+          if (int_value < 0 || int_value > 255) {
+            return std::unexpected(
+                Error("Enum member value out of range for `byte`",
+                      member.value.value()->start, member.value.value()->end)
+                    .with_hint("Expected a value between 0 and 255"));
+          }
+        } else {
+          return std::unexpected(
+              type_mismatch_error("Enum member value type mismatch", underlying,
+                                  value_type, value));
+        }
+      }
+      if (value->type != EXPR_INT) {
+        return std::unexpected(
+            Error("Enum member value must be an integer constant",
+                  member.value.value()->start, member.value.value()->end));
+      }
+      next_value = std::get<expr::Int *>(value->data)->value;
+    }
+
+    members.push_back(CheckedEnumMember{member_name, next_value});
+    next_value++;
+  }
+
+  members.push_back(
+      CheckedEnumMember{"count", static_cast<int64_t>(enum_->members.size())});
+
+  _enums.push_back(CheckedEnum{name, underlying, members});
+  return {};
+}
+
+Type *Checker::make_enum_type(std::string_view name, size_t start, size_t end) {
+  return new Type{
+      .type = TYPE_ENUM,
+      .start = start,
+      .end = end,
+      .data = new type::Enum{type::Enum{.name = name}},
+  };
+}
+
+bool Checker::union_accepts_type(Type *union_type, Type *member_type) const {
+  if (union_type->type != TYPE_UNION)
+    return false;
+  auto *union_data = std::get<type::Union *>(union_type->data);
+  for (Type *member: union_data->members) {
+    if (type_eq(member, member_type))
+      return true;
+  }
+  return false;
 }
 
 size_t Checker::type_size(Type *type) {
@@ -412,6 +509,18 @@ size_t Checker::type_size(Type *type) {
     if (auto local = find_local_struct(name); local.has_value())
       return local->size;
     return 8;
+  }
+  case TYPE_ENUM: {
+    std::string_view name = std::get<type::Enum *>(type->data)->name;
+    if (auto local = find_local_enum(name); local.has_value())
+      return type_size(local->underlying_type);
+    return 8;
+  }
+  case TYPE_UNION: {
+    size_t max_size = 0;
+    for (Type *member: std::get<type::Union *>(type->data)->members)
+      max_size = std::max(max_size, type_size(member));
+    return max_size;
   }
   case TYPE_PROC: return 8;
   case TYPE_TUPLE: {
@@ -516,6 +625,50 @@ ErrorOr<CheckedStruct> Checker::resolve_struct(std::string_view name,
     return prelude.value();
 
   return find_imported_struct(name, start, end);
+}
+
+std::optional<CheckedEnum> Checker::find_local_enum(std::string_view name) {
+  for (const auto &enum_: _enums) {
+    if (enum_.name == name)
+      return enum_;
+  }
+  return std::nullopt;
+}
+
+ErrorOr<CheckedEnum> Checker::find_imported_enum(std::string_view name,
+                                                 size_t start, size_t end) {
+  if (_registry == nullptr || _imports.empty()) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared enum `{}`", name), start, end));
+  }
+
+  std::optional<CheckedEnum> found;
+  for (const auto &import_module: _imports) {
+    auto enum_ = _registry->find_enum(import_module, name);
+    if (!enum_.has_value())
+      continue;
+    if (found.has_value()) {
+      return std::unexpected(
+          Error(std::format("Ambiguous import for enum `{}`", name), start, end)
+              .with_hint("Multiple imported modules export an enum with this "
+                         "name; define the type locally"));
+    }
+    found = enum_;
+  }
+
+  if (!found.has_value()) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared enum `{}`", name), start, end));
+  }
+
+  return *found;
+}
+
+ErrorOr<CheckedEnum> Checker::resolve_enum(std::string_view name, size_t start,
+                                           size_t end) {
+  if (auto local = find_local_enum(name); local.has_value())
+    return *local;
+  return find_imported_enum(name, start, end);
 }
 
 ErrorOr<void> Checker::check_import(decl::Import *import, size_t start,
@@ -706,9 +859,10 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
       var->type = type;
 
       if (var->value.has_value()) {
-        Type *expr_type = try$(check_expr(var->value.value(), scope));
+        Type *expr_type = try$(check_expr(var->value.value(), scope, type));
 
-        if (!type_eq(type, expr_type)) {
+        if (!type_eq(type, expr_type) &&
+            !union_accepts_type(type, expr_type)) {
           if (type->type == TYPE_BYTE && expr_type->type == TYPE_INT &&
               var->value.value()->type == EXPR_INT) {
             int64_t value =
@@ -806,14 +960,14 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
   std::unreachable();
 }
 
-ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
+ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope, Type *expected) {
   if (expr->type == EXPR_COMPTIME_CALL) {
     Expr *folded = try$(evaluate_constant(expr, scope, nullptr));
     expr->type = folded->type;
     expr->data = folded->data;
-    if (folded->expr_type != nullptr)
+    if (expr->expr_type != nullptr)
       expr->expr_type = folded->expr_type;
-    return check_expr(expr, scope);
+    return check_expr(expr, scope, expected);
   }
 
   Type *type = nullptr;
@@ -852,6 +1006,13 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
     if (type != nullptr)
       break;
 
+    if (find_local_enum(var->var.id_value).has_value()) {
+      return std::unexpected(
+          Error(std::format("Enum type `{}` cannot be used as a value",
+                            var->var.id_value),
+                expr->start, expr->end));
+    }
+
     auto found = scope->find_var(var->var.id_value);
     if (found.has_value()) {
       type = found.value();
@@ -872,7 +1033,7 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
 
   case EXPR_GROUP: {
     expr::Group *group = std::get<expr::Group *>(expr->data);
-    type = try$(check_expr(group->expr, scope));
+    type = try$(check_expr(group->expr, scope, expected));
     group->expr->expr_type = type;
     break;
   }
@@ -904,13 +1065,48 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
     }
 
     if (!type_eq(lhs_type, rhs_type)) {
-      return std::unexpected(
-          Error("Invalid binary operation", expr->start, expr->end)
-              .with_hint(std::format("Cannot apply operator `{}` to operands "
-                                     "of type `{}` and `{}`",
-                                     binop_to_string(binary->op),
-                                     lhs_type->to_string(),
-                                     rhs_type->to_string())));
+      bool comparison =
+          binary->op == expr::Binary::BINOP_EQ ||
+          binary->op == expr::Binary::BINOP_NEQ ||
+          binary->op == expr::Binary::BINOP_LT ||
+          binary->op == expr::Binary::BINOP_LTE ||
+          binary->op == expr::Binary::BINOP_GT ||
+          binary->op == expr::Binary::BINOP_GTE;
+      bool enum_int_cmp = false;
+      if (comparison) {
+        if (lhs_type->type == TYPE_ENUM &&
+            (rhs_type->type == TYPE_INT || rhs_type->type == TYPE_BYTE)) {
+          std::string_view enum_name =
+              std::get<type::Enum *>(lhs_type->data)->name;
+          if (auto enum_ = find_local_enum(enum_name); enum_.has_value()) {
+            if (enum_->underlying_type->type == TYPE_BYTE &&
+                rhs_type->type == TYPE_INT)
+              enum_int_cmp = true;
+            else
+              enum_int_cmp = type_eq(enum_->underlying_type, rhs_type);
+          }
+        } else if (rhs_type->type == TYPE_ENUM &&
+                    (lhs_type->type == TYPE_INT || lhs_type->type == TYPE_BYTE)) {
+          std::string_view enum_name =
+              std::get<type::Enum *>(rhs_type->data)->name;
+          if (auto enum_ = find_local_enum(enum_name); enum_.has_value()) {
+            if (enum_->underlying_type->type == TYPE_BYTE &&
+                lhs_type->type == TYPE_INT)
+              enum_int_cmp = true;
+            else
+              enum_int_cmp = type_eq(enum_->underlying_type, lhs_type);
+          }
+        }
+      }
+      if (!enum_int_cmp) {
+        return std::unexpected(
+            Error("Invalid binary operation", expr->start, expr->end)
+                .with_hint(std::format("Cannot apply operator `{}` to operands "
+                                       "of type `{}` and `{}`",
+                                       binop_to_string(binary->op),
+                                       lhs_type->to_string(),
+                                       rhs_type->to_string())));
+      }
     }
 
     switch (binary->op) {
@@ -1281,8 +1477,66 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
   case EXPR_COMPTIME_CALL:
     std::unreachable();
 
+  case EXPR_ENUM_CASE: {
+    auto *case_ = std::get<expr::EnumCase *>(expr->data);
+    if (expected == nullptr || expected->type != TYPE_ENUM) {
+      return std::unexpected(
+          Error("Enum case requires a known enum type context", expr->start,
+                expr->end)
+              .with_hint("Use `.MEMBER` where an enum value is expected, or "
+                         "use a qualified name like `EnumName.MEMBER`"));
+    }
+    std::string_view enum_name =
+        std::get<type::Enum *>(expected->data)->name;
+    CheckedEnum enum_ = try$(resolve_enum(enum_name, expr->start, expr->end));
+    for (const auto &member: enum_.members) {
+      if (member.name == case_->member.id_value) {
+        type = make_enum_type(enum_name, expr->start, expr->end);
+        break;
+      }
+    }
+    if (type == nullptr) {
+      return std::unexpected(
+          Error(std::format("Enum `{}` has no member `{}`", enum_name,
+                            case_->member.id_value),
+                case_->member.start, case_->member.end));
+    }
+    break;
+  }
+
   case EXPR_FIELD: {
     expr::Field *field = std::get<expr::Field *>(expr->data);
+
+    if (field->base->type == EXPR_VAR) {
+      auto *var = std::get<expr::Var *>(field->base->data);
+      if (!var->module.has_value()) {
+        std::optional<CheckedEnum> enum_;
+        if (auto local = find_local_enum(var->var.id_value); local.has_value())
+          enum_ = local;
+        else if (auto imported =
+                     find_imported_enum(var->var.id_value, expr->start, expr->end);
+                 imported.has_value())
+          enum_ = imported.value();
+
+        if (enum_.has_value()) {
+          for (const auto &member: enum_->members) {
+            if (member.name == field->field.id_value) {
+              type = make_enum_type(enum_->name, expr->start, expr->end);
+              field->base->expr_type =
+                  make_enum_type(enum_->name, field->base->start, field->base->end);
+              break;
+            }
+          }
+          if (type != nullptr)
+            break;
+          return std::unexpected(
+              Error(std::format("Enum `{}` has no member `{}`", enum_->name,
+                                field->field.id_value),
+                    field->field.start, field->field.end));
+        }
+      }
+    }
+
     Type *base_type = try$(check_expr(field->base, scope));
     field->base->expr_type = base_type;
 
@@ -1347,9 +1601,10 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope) {
                   field.name.start, field.name.end));
       }
 
-      Type *value_type = try$(check_expr(field.value, scope));
+      Type *value_type = try$(check_expr(field.value, scope, *expected_type));
       field.value->expr_type = value_type;
       if (!type_eq(*expected_type, value_type) &&
+          !union_accepts_type(*expected_type, value_type) &&
           !((*expected_type)->type == TYPE_PTR &&
             is_null_pointer_literal(field.value))) {
         Error error("Type mismatch in struct literal", field.value->start,
@@ -1578,8 +1833,30 @@ ErrorOr<Type *> Checker::check_type(Type *type, Scope *scope) {
     };
   }
   case TYPE_STRUCT: {
-    auto strukt = std::get<type::Struct *>(type->data);
-    try$(resolve_struct(strukt->name, type->start, type->end));
+    auto *strukt = std::get<type::Struct *>(type->data);
+    std::string_view name = strukt->name;
+    if (find_local_enum(name).has_value())
+      return make_enum_type(name, type->start, type->end);
+    if (auto imported = find_imported_enum(name, type->start, type->end);
+        imported.has_value())
+      return make_enum_type(name, type->start, type->end);
+    try$(resolve_struct(name, type->start, type->end));
+    return type;
+  }
+  case TYPE_ENUM: {
+    auto *enum_type = std::get<type::Enum *>(type->data);
+    try$(resolve_enum(enum_type->name, type->start, type->end));
+    return type;
+  }
+  case TYPE_UNION: {
+    auto *union_type = std::get<type::Union *>(type->data);
+    if (union_type->members.empty()) {
+      return std::unexpected(
+          Error("Union type must have at least one member", type->start,
+                type->end));
+    }
+    for (Type *member: union_type->members)
+      try$(check_type(member, scope));
     return type;
   }
   case TYPE_PROC: {
@@ -2160,6 +2437,26 @@ bool Checker::type_eq(Type *a, Type *b) const {
     auto *a_struct = std::get<type::Struct *>(a->data);
     auto *b_struct = std::get<type::Struct *>(b->data);
     return a_struct->name == b_struct->name;
+  }
+  case TYPE_ENUM: {
+    if (b->type != TYPE_ENUM)
+      return false;
+    auto *a_enum = std::get<type::Enum *>(a->data);
+    auto *b_enum = std::get<type::Enum *>(b->data);
+    return a_enum->name == b_enum->name;
+  }
+  case TYPE_UNION: {
+    if (b->type != TYPE_UNION)
+      return false;
+    auto *a_union = std::get<type::Union *>(a->data);
+    auto *b_union = std::get<type::Union *>(b->data);
+    if (a_union->members.size() != b_union->members.size())
+      return false;
+    for (size_t i = 0; i < a_union->members.size(); i++) {
+      if (!type_eq(a_union->members[i], b_union->members[i]))
+        return false;
+    }
+    return true;
   }
   case TYPE_PROC: {
     if (b->type != TYPE_PROC)

@@ -46,7 +46,11 @@ private:
   void copy_aggregate_from_offset(Function *fn, Operand dst, Operand src_base,
                                   int64_t src_offset, size_t size);
   std::optional<CheckedStruct> find_struct(std::string_view name);
+  std::optional<CheckedEnum> find_enum(std::string_view name);
+  std::optional<int64_t> enum_member_value(std::string_view enum_name,
+                                           std::string_view member);
   size_t struct_size(Type *type);
+  size_t union_size(Type *type);
   size_t tuple_size(Type *type);
   size_t aggregate_size(Type *type);
   size_t type_size(Type *type);

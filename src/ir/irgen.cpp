@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <ir/ir.hpp>
 #include <ir/irgen.hpp>
 #include <module.hpp>
@@ -94,6 +95,8 @@ void Generator::gen_decl(Decl *decl) {
   case DECL_IMPORT: break;
 
   case DECL_STRUCT: break;
+
+  case DECL_ENUM: break;
 
   case DECL_WHEN:
   case DECL_COMPTIME_BLOCK:
@@ -335,6 +338,33 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_REF: {
     auto ref = std::get<expr::Ref *>(expr->data);
+    if (ref->expr->type == EXPR_FIELD) {
+      auto *field = std::get<expr::Field *>(ref->expr->data);
+      size_t offset = field_offset(field);
+      Type *base_type = field->base->expr_type;
+      if (base_type != nullptr && base_type->type == TYPE_PTR) {
+        Operand base = gen_field_load_base(field->base, fn);
+        Operand ptr_val = _builder.new_temp();
+        fn->assign(ptr_val, base);
+        if (offset == 0)
+          return ptr_val;
+        Operand off_addr = _builder.new_temp();
+        fn->add(off_addr, ptr_val,
+                Operand::ConstantInt(static_cast<int64_t>(offset)));
+        return off_addr;
+      }
+      Operand base = gen_field_load_base(field->base, fn);
+      Operand addr = _builder.new_temp();
+      if (base.type == OPERAND_VARIABLE)
+        fn->addrof(addr, base);
+      else
+        fn->assign(addr, base);
+      if (offset == 0)
+        return addr;
+      Operand off_addr = _builder.new_temp();
+      fn->add(off_addr, addr, Operand::ConstantInt(static_cast<int64_t>(offset)));
+      return off_addr;
+    }
     if (ref->expr->type == EXPR_VAR && expr->expr_type != nullptr &&
         expr->expr_type->type == TYPE_PROC) {
       auto *var = std::get<expr::Var *>(ref->expr->data);
@@ -488,6 +518,15 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_FIELD: {
     auto field = std::get<expr::Field *>(expr->data);
+    if (field->base->type == EXPR_VAR) {
+      auto *var = std::get<expr::Var *>(field->base->data);
+      if (!var->module.has_value()) {
+        if (auto value =
+                enum_member_value(var->var.id_value, field->field.id_value);
+            value.has_value())
+          return Operand::ConstantInt(*value);
+      }
+    }
     size_t offset = field_offset(field);
     Operand base = gen_field_load_base(field->base, fn);
     Type *field_type = expr->expr_type;
@@ -519,6 +558,18 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     fn->variable_sizes[temp] = struct_size(type);
     init_struct_var(fn, temp, type, expr);
     return Operand::Variable(temp);
+  }
+
+  case EXPR_ENUM_CASE: {
+    auto *case_ = std::get<expr::EnumCase *>(expr->data);
+    if (expr->expr_type == nullptr || expr->expr_type->type != TYPE_ENUM)
+      PANIC("enum case missing type");
+    std::string_view enum_name =
+        std::get<type::Enum *>(expr->expr_type->data)->name;
+    if (auto value = enum_member_value(enum_name, case_->member.id_value);
+        value.has_value())
+      return Operand::ConstantInt(*value);
+    PANIC("unknown enum case during codegen");
   }
   }
   PANIC("unhandled expr type");
@@ -751,6 +802,52 @@ std::optional<CheckedStruct> Generator::find_struct(std::string_view name) {
   return std::nullopt;
 }
 
+std::optional<CheckedEnum> Generator::find_enum(std::string_view name) {
+  for (Decl *decl: _decls) {
+    if (decl->type != DECL_ENUM)
+      continue;
+    auto *enum_ = std::get<decl::Enum *>(decl->data);
+    if (enum_->name.id_value != name)
+      continue;
+    CheckedEnum checked{.name = name, .underlying_type = nullptr};
+    int64_t next_value = 0;
+    for (const decl::EnumMember &member: enum_->members) {
+      if (member.value.has_value() &&
+          member.value.value()->type == EXPR_INT)
+        next_value = std::get<expr::Int *>(member.value.value()->data)->value;
+      checked.members.push_back(
+          CheckedEnumMember{member.name.id_value, next_value});
+      next_value++;
+    }
+    checked.members.push_back(
+        CheckedEnumMember{"count",
+                          static_cast<int64_t>(enum_->members.size())});
+    return checked;
+  }
+
+  if (_registry != nullptr) {
+    for (const auto &[module_name, module]: _registry->modules()) {
+      auto enum_ = _registry->find_enum(module_name, name);
+      if (enum_.has_value())
+        return enum_;
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<int64_t> Generator::enum_member_value(std::string_view enum_name,
+                                                    std::string_view member) {
+  auto enum_ = find_enum(enum_name);
+  if (!enum_.has_value())
+    return std::nullopt;
+  for (const auto &enum_member: enum_->members) {
+    if (enum_member.name == member)
+      return enum_member.value;
+  }
+  return std::nullopt;
+}
+
 size_t Generator::tuple_size(Type *type) {
   if (type->type != TYPE_TUPLE)
     PANIC("tuple_size requires tuple type");
@@ -776,6 +873,15 @@ size_t Generator::tuple_element_offset(Type *tuple_type, size_t index) {
   return offset;
 }
 
+size_t Generator::union_size(Type *type) {
+  if (type->type != TYPE_UNION)
+    PANIC("union_size requires union type");
+  size_t max_size = 0;
+  for (Type *member: std::get<type::Union *>(type->data)->members)
+    max_size = std::max(max_size, type_size(member));
+  return max_size;
+}
+
 size_t Generator::struct_size(Type *type) {
   if (type->type != TYPE_STRUCT)
     return 8;
@@ -794,6 +900,8 @@ size_t Generator::type_size(Type *type) {
   case TYPE_BYTE:
   case TYPE_PTR:  return 8;
   case TYPE_STRUCT: return struct_size(type);
+  case TYPE_ENUM: return 8;
+  case TYPE_UNION: return union_size(type);
   case TYPE_TUPLE: return tuple_size(type);
   case TYPE_PROC: return 8;
   }
@@ -921,7 +1029,13 @@ void Generator::store_struct_fields(Function *fn, Operand base, Expr *value) {
         }
       }
       Operand val = gen_expr(field.value, fn);
-      if (field_type != nullptr &&
+      if (field_type != nullptr && field_type->type == TYPE_UNION) {
+        if (val.type != OPERAND_VARIABLE)
+          PANIC("union field init requires variable operand");
+        size_t copy_size = type_size(field.value->expr_type);
+        copy_aggregate_to_offset(fn, base, static_cast<int64_t>(offset), val,
+                                 copy_size);
+      } else if (field_type != nullptr &&
           (field_type->type == TYPE_STRUCT || field_type->type == TYPE_TUPLE)) {
         if (val.type != OPERAND_VARIABLE)
           PANIC("aggregate struct field init requires variable operand");

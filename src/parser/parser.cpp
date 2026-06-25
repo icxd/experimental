@@ -169,13 +169,48 @@ ErrorOr<Decl *> Parser::parse_decl() {
                                     .start = struct_.start,
                                     .end = cbrace.end,
                                     .data = struct_data});
+  } else if (peek().type == TOK_ENUM) {
+    Token enum_ = try$(expect(TOK_ENUM, "Expected `enum`"));
+    Token enum_name = try$(expect(TOK_ID, "Expected enum name"));
+    Type *underlying = nullptr;
+    if (peek().type == TOK_COLON) {
+      consume();
+      underlying = try$(parse_type());
+    }
+    Token obrace = try$(expect(TOK_OBRACE, "Expected `{`"));
+    std::vector<decl::EnumMember> members{};
+    while (_pos < _tokens.size() && peek().type != TOK_CBRACE) {
+      Token member_name =
+          try$(expect(TOK_ID, "Expected enum member name"));
+      std::optional<Expr *> explicit_value = std::nullopt;
+      if (peek().type == TOK_EQ) {
+        consume();
+        explicit_value = try$(parse_expr(0, false));
+      }
+      members.push_back(
+          decl::EnumMember{.name = member_name, .value = explicit_value});
+      if (peek().type == TOK_COMMA)
+        consume();
+      else
+        break;
+    }
+    Token cbrace = try$(expect(TOK_CBRACE, "Expected `}`"));
+
+    auto *enum_data = _arena.create<decl::Enum>(
+        decl::Enum{.name = enum_name, .underlying = underlying,
+                   .members = members});
+
+    return _arena.create<Decl>(Decl{.type = DECL_ENUM,
+                                    .start = enum_.start,
+                                    .end = cbrace.end,
+                                    .data = enum_data});
   } else if (is_comptime) {
     return std::unexpected(
         Error("Expected `proc` or `{` after `comptime`", peek().start,
               peek().end));
   } else {
     return std::unexpected(
-        Error("Expected `proc`, `const`, `struct`, `import`, `when`, or "
+        Error("Expected `proc`, `const`, `struct`, `enum`, `import`, `when`, or "
               "`comptime`",
               peek().start, peek().end));
   }
@@ -356,7 +391,10 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     std::vector<Stmt *> else_block{};
     if (peek().type == TOK_ELSE) {
       try$(expect(TOK_ELSE, "Expected `else`"));
-      else_block = try$(parse_block());
+      if (peek().type == TOK_IF)
+        else_block.push_back(try$(parse_stmt()));
+      else
+        else_block = try$(parse_block());
     }
     return _arena.create<Stmt>(Stmt{
         .type = STMT_IF,
@@ -593,6 +631,17 @@ ErrorOr<Expr *> Parser::parse_postfix_expr(bool allow_struct_lit) {
 }
 
 ErrorOr<Expr *> Parser::parse_primary_expr(bool allow_struct_lit) {
+  if (peek().type == TOK_DOT) {
+    Token dot = consume();
+    Token member = try$(expect(TOK_ID, "Expected enum member after `.`"));
+    return _arena.create<Expr>(Expr{
+        .type = EXPR_ENUM_CASE,
+        .start = dot.start,
+        .end = member.end,
+        .data = _arena.create<expr::EnumCase>(expr::EnumCase{.member = member}),
+    });
+  }
+
   if (peek().type == TOK_OPAREN) {
     Token oparen = try$(expect(TOK_OPAREN, "Expected `(`"));
     if (peek().type == TOK_CPAREN) {
@@ -863,6 +912,29 @@ ErrorOr<Type *> Parser::parse_type() {
       });
     }
     return first;
+  } else if (peek().type == TOK_UNION) {
+    Token union_ = try$(expect(TOK_UNION, "Expected `union`"));
+    Token obrace = try$(expect(TOK_OBRACE, "Expected `{`"));
+    std::vector<Type *> members{};
+    while (_pos < _tokens.size() && peek().type != TOK_CBRACE) {
+      members.push_back(try$(parse_type()));
+      if (peek().type == TOK_COMMA)
+        consume();
+      else
+        break;
+    }
+    Token cbrace = try$(expect(TOK_CBRACE, "Expected `}`"));
+    if (members.empty()) {
+      return std::unexpected(
+          Error("Union type must have at least one member", union_.start,
+                cbrace.end));
+    }
+    return _arena.create<Type>(Type{
+        .type = TYPE_UNION,
+        .start = union_.start,
+        .end = cbrace.end,
+        .data = _arena.create<type::Union>(type::Union{.members = members}),
+    });
   } else if (peek().type == TOK_PROC) {
     Token proc = try$(expect(TOK_PROC, "Expected `proc`"));
     auto sig = try$(parse_proc_signature());

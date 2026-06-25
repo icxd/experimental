@@ -61,6 +61,17 @@ namespace decl {
     std::vector<StructField> fields;
   };
 
+  struct EnumMember {
+    Token name;
+    std::optional<Expr *> value = std::nullopt;
+  };
+
+  struct Enum {
+    Token name;
+    Type *underlying = nullptr;
+    std::vector<EnumMember> members;
+  };
+
 } // namespace decl
 
 enum DeclType {
@@ -70,12 +81,13 @@ enum DeclType {
   DECL_IMPORT,
   DECL_COMPTIME_BLOCK,
   DECL_STRUCT,
+  DECL_ENUM,
 };
 struct Decl {
   DeclType type;
   size_t start, end;
   std::variant<decl::Const *, decl::Proc *, decl::When *, decl::Import *,
-               decl::ComptimeBlock *, decl::Struct *>
+               decl::ComptimeBlock *, decl::Struct *, decl::Enum *>
       data;
 };
 
@@ -254,6 +266,10 @@ namespace expr {
     Expr *expr;
   };
 
+  struct EnumCase {
+    Token member;
+  };
+
   struct Index {
     Expr *base;
     Expr *index;
@@ -302,6 +318,7 @@ enum ExprType {
   EXPR_STRING,
   EXPR_SIZEOF,
   EXPR_CAST,
+  EXPR_ENUM_CASE,
   EXPR_INDEX,
   EXPR_PROC_LIT,
   EXPR_TUPLE,
@@ -313,7 +330,8 @@ struct Expr {
                expr::Binary *, expr::Ref *, expr::Deref *, expr::Call *,
                expr::ComptimeCall *, expr::Not *, expr::Field *,
                expr::StructLit *, expr::String *, expr::Sizeof *,
-               expr::Cast *, expr::Index *, expr::ProcLit *, expr::TupleLit *>
+               expr::Cast *, expr::EnumCase *, expr::Index *, expr::ProcLit *,
+               expr::TupleLit *>
       data;
   Type *expr_type = nullptr;
 
@@ -428,6 +446,9 @@ public:
       return std::format("cast(...) {}", x->expr->to_string());
     }
 
+    case EXPR_ENUM_CASE:
+      return std::format(".{}", std::get<expr::EnumCase *>(data)->member.id_value);
+
     case EXPR_INDEX: {
       auto x = std::get<expr::Index *>(data);
       return std::format("{}[{}]", x->base->to_string(),
@@ -471,6 +492,7 @@ public:
     case EXPR_STRING:
     case EXPR_SIZEOF:
     case EXPR_CAST:
+    case EXPR_ENUM_CASE:
     case EXPR_PROC_LIT:
     case EXPR_TUPLE: return false;
     }
@@ -497,6 +519,14 @@ namespace type {
     std::vector<Type *> elements;
   };
 
+  struct Enum {
+    std::string_view name;
+  };
+
+  struct Union {
+    std::vector<Type *> members;
+  };
+
 } // namespace type
 
 enum TypeType {
@@ -506,13 +536,17 @@ enum TypeType {
   TYPE_BYTE,
   TYPE_PTR,
   TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_UNION,
   TYPE_PROC,
   TYPE_TUPLE,
 };
 struct Type {
   TypeType type;
   size_t start, end;
-  std::variant<type::Ptr *, type::Struct *, type::Proc *, type::Tuple *> data;
+  std::variant<type::Ptr *, type::Struct *, type::Enum *, type::Union *,
+               type::Proc *, type::Tuple *>
+      data;
 
 public:
   std::string to_string() const {
@@ -527,6 +561,19 @@ public:
     }
     case TYPE_STRUCT:
       return std::string(std::get<type::Struct *>(data)->name);
+    case TYPE_ENUM:
+      return std::string(std::get<type::Enum *>(data)->name);
+    case TYPE_UNION: {
+      auto *union_type = std::get<type::Union *>(data);
+      std::string out = "union {";
+      for (size_t i = 0; i < union_type->members.size(); i++) {
+        out += union_type->members[i]->to_string();
+        if (i + 1 < union_type->members.size())
+          out += ", ";
+      }
+      out += "}";
+      return out;
+    }
     case TYPE_PROC: {
       auto *proc = std::get<type::Proc *>(data);
       std::string sig = "proc(";

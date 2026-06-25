@@ -67,3 +67,14 @@ struct CheckedStruct {
   std::vector<CheckedStructField> fields;
   size_t size;
 };
+
+struct CheckedEnumMember {
+  std::string_view name;
+  int64_t value;
+};
+
+struct CheckedEnum {
+  std::string_view name;
+  Type *underlying_type;
+  std::vector<CheckedEnumMember> members;
+};

@@ -23,6 +23,8 @@ enum TokenType {
   TOK_CONTINUE,
   TOK_IMPORT,
   TOK_STRUCT,
+  TOK_ENUM,
+  TOK_UNION,
   TOK_SIZEOF,
   TOK_CAST,
 
@@ -84,6 +86,8 @@ struct Token {
     case TOK_CONTINUE:  return std::format("TOK_CONTINUE");
     case TOK_IMPORT:    return std::format("TOK_IMPORT");
     case TOK_STRUCT:    return std::format("TOK_STRUCT");
+    case TOK_ENUM:      return std::format("TOK_ENUM");
+    case TOK_UNION:     return std::format("TOK_UNION");
     case TOK_SIZEOF:    return std::format("TOK_SIZEOF");
     case TOK_CAST:      return std::format("TOK_CAST");
     case TOK_STRING:    return std::format("TOK_STRING({})", string_value);

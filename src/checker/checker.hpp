@@ -29,12 +29,14 @@ public:
   const std::vector<CheckedLambda> &lambdas() const { return _lambdas; }
   const std::vector<CheckedConst> &consts() const { return _consts; }
   const std::vector<CheckedStruct> &structs() const { return _structs; }
+  const std::vector<CheckedEnum> &enums() const { return _enums; }
   const std::vector<std::string> &imports() const { return _imports; }
 
 private:
   ErrorOr<void> check_decl(Decl *decl, Scope *scope);
   ErrorOr<void> check_stmt(Stmt *stmt, Scope *scope);
-  ErrorOr<Type *> check_expr(Expr *expr, Scope *scope);
+  ErrorOr<Type *> check_expr(Expr *expr, Scope *scope,
+                             Type *expected = nullptr);
   ErrorOr<Type *> check_type(Type *type, Scope *scope);
 
   ErrorOr<Expr *> evaluate_constant(Expr *expr, Scope *scope,
@@ -92,6 +94,7 @@ private:
 
   ErrorOr<void> check_import(decl::Import *import, size_t start, size_t end);
   ErrorOr<void> check_struct(decl::Struct *strukt, size_t start, size_t end);
+  ErrorOr<void> check_enum(decl::Enum *enum_, size_t start, size_t end);
   ErrorOr<CheckedStruct> resolve_struct(std::string_view name, size_t start,
                                         size_t end);
   std::optional<CheckedStruct> find_local_struct(std::string_view name);
@@ -99,6 +102,13 @@ private:
                                               size_t start, size_t end);
   ErrorOr<CheckedStruct> find_prelude_struct(std::string_view name,
                                              size_t start, size_t end);
+  ErrorOr<CheckedEnum> resolve_enum(std::string_view name, size_t start,
+                                    size_t end);
+  std::optional<CheckedEnum> find_local_enum(std::string_view name);
+  ErrorOr<CheckedEnum> find_imported_enum(std::string_view name, size_t start,
+                                          size_t end);
+  Type *make_enum_type(std::string_view name, size_t start, size_t end);
+  bool union_accepts_type(Type *union_type, Type *member_type) const;
   size_t type_size(Type *type);
 
   Scope *_global_scope = new Scope;
@@ -116,6 +126,7 @@ private:
   size_t _current_proc_id = std::numeric_limits<size_t>::max();
   std::vector<CheckedConst> _consts = {};
   std::vector<CheckedStruct> _structs = {};
+  std::vector<CheckedEnum> _enums = {};
   size_t _loop_depth = 0;
 };
 

@@ -1,0 +1,33 @@
+/// 0
+struct IntExpr {
+  value int;
+}
+
+struct BoolExpr {
+  value bool;
+}
+
+struct Expr {
+  type int;
+  data union { IntExpr, BoolExpr };
+}
+
+proc main() int {
+  if sizeof(union { IntExpr, BoolExpr }) != sizeof(IntExpr) {
+    return 1;
+  }
+  var payload union { IntExpr, BoolExpr } = IntExpr{value = 42};
+  var i = cast(*IntExpr) &payload;
+  if i.value != 42 {
+    return 2;
+  }
+  var e = Expr{
+    type = 0,
+    data = IntExpr{value = 99},
+  };
+  var j = cast(*IntExpr) &e.data;
+  if j.value != 99 {
+    return 3;
+  }
+  return 0;
+}

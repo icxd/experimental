@@ -286,6 +286,24 @@ static ModuleSymbols syntactic_module_symbols(const ParsedModule &module) {
       });
       break;
     }
+    case DECL_ENUM: {
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      CheckedEnum checked{.name = enum_->name.id_value, .underlying_type = nullptr};
+      int64_t next_value = 0;
+      for (const decl::EnumMember &member: enum_->members) {
+        if (member.value.has_value() &&
+            member.value.value()->type == EXPR_INT)
+          next_value = std::get<expr::Int *>(member.value.value()->data)->value;
+        checked.members.push_back(
+            CheckedEnumMember{member.name.id_value, next_value});
+        next_value++;
+      }
+      checked.members.push_back(
+          CheckedEnumMember{"count",
+                            static_cast<int64_t>(enum_->members.size())});
+      symbols.enums.push_back(std::move(checked));
+      break;
+    }
     default:
       break;
     }
@@ -460,6 +478,7 @@ ErrorOr<void> Project::finalize_modules() {
         .procs = checker.procs(),
         .consts = checker.consts(),
         .structs = checker.structs(),
+        .enums = checker.enums(),
     };
     _registry.register_module(symbols);
     _checked_symbols[path] = symbols;

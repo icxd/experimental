@@ -1,0 +1,64 @@
+import "std/io.rye";
+
+struct IntExpr {
+  value int;
+}
+
+struct BoolExpr {
+  value bool;
+}
+
+struct VarExpr {
+  name String;
+}
+
+enum ExprType {
+  INT,
+  BOOL,
+  VAR,
+}
+
+struct Expr {
+  type ExprType;
+  data union { IntExpr, BoolExpr, VarExpr };
+}
+
+proc visit(e *Expr) void {
+  if e.type == ExprType.INT {
+    var int_data = cast(*IntExpr) &e.data;
+    var _ = io:print_int(int_data.value);
+  } else if e.type == ExprType.BOOL {
+    var bool_data = cast(*BoolExpr) &e.data;
+    if bool_data.value {
+      var _ = io:print_string("true");
+    } else {
+      var _ = io:print_string("false");
+    }
+  } else if e.type == ExprType.VAR {
+    var var_data = cast(*VarExpr) &e.data;
+    var _ = io:print_string(var_data.name);
+  }
+
+  var _ = io:print_char(cast(byte) 10);
+}
+
+proc main() int {
+  var int_expr = Expr{
+    type = .INT,
+    data = IntExpr{value = 123},
+  };
+  var bool_expr = Expr{
+    type = .BOOL,
+    data = BoolExpr{value = true},
+  };
+  var var_expr = Expr{
+    type = .VAR,
+    data = VarExpr{name = "abc"},
+  };
+
+  visit(&int_expr);
+  visit(&bool_expr);
+  visit(&var_expr);
+
+  return 0;
+}

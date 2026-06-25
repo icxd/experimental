@@ -14,6 +14,7 @@ struct ModuleSymbols {
   std::vector<CheckedProc> procs;
   std::vector<CheckedConst> consts;
   std::vector<CheckedStruct> structs;
+  std::vector<CheckedEnum> enums;
 };
 
 class ModuleRegistry {
@@ -67,6 +68,18 @@ public:
     for (const auto &strukt: it->second.structs) {
       if (strukt.name == name)
         return strukt;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<CheckedEnum> find_enum(std::string_view module,
+                                       std::string_view name) const {
+    auto it = _modules.find(std::string(module));
+    if (it == _modules.end())
+      return std::nullopt;
+    for (const auto &enum_: it->second.enums) {
+      if (enum_.name == name)
+        return enum_;
     }
     return std::nullopt;
   }
