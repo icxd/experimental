@@ -111,6 +111,7 @@ private:
                                                     size_t start, size_t end);
   Type *make_enum_type(std::string_view name, size_t start, size_t end);
   bool union_accepts_type(Type *union_type, Type *member_type) const;
+  bool types_assignable(Type *dest, Type *src) const;
   size_t type_size(Type *type);
 
   Scope *_global_scope = new Scope;

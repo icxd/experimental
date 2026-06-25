@@ -501,6 +501,16 @@ bool Checker::union_accepts_type(Type *union_type, Type *member_type) const {
   return false;
 }
 
+bool Checker::types_assignable(Type *dest, Type *src) const {
+  if (type_eq(dest, src))
+    return true;
+  if (dest->type == TYPE_UNION && union_accepts_type(dest, src))
+    return true;
+  if (src->type == TYPE_UNION && union_accepts_type(src, dest))
+    return true;
+  return false;
+}
+
 size_t Checker::type_size(Type *type) {
   switch (type->type) {
   case TYPE_VOID: return 0;
@@ -799,7 +809,7 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     stmt::Assign *assign = std::get<stmt::Assign *>(stmt->data);
     Type *lvalue_type = try$(check_lvalue(assign->target, scope));
     Type *expr_type = try$(check_expr(assign->value, scope));
-    if (!type_eq(lvalue_type, expr_type) &&
+    if (!types_assignable(lvalue_type, expr_type) &&
         !(lvalue_type->type == TYPE_PTR && is_null_pointer_literal(assign->value))) {
       return std::unexpected(
           type_mismatch_error("Type mismatch in assignment", lvalue_type,
@@ -905,8 +915,7 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
       if (var->value.has_value()) {
         Type *expr_type = try$(check_expr(var->value.value(), scope, type));
 
-        if (!type_eq(type, expr_type) &&
-            !union_accepts_type(type, expr_type)) {
+        if (!types_assignable(type, expr_type)) {
           if (type->type == TYPE_BYTE && expr_type->type == TYPE_INT &&
               var->value.value()->type == EXPR_INT) {
             int64_t value =
@@ -1754,7 +1763,9 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope, Type *expected) {
     Type *target = try$(check_type(cast_->target, scope));
     Type *from = try$(check_expr(cast_->expr, scope));
     cast_->expr->expr_type = from;
-    if (!types_are_castable(from, target)) {
+    if (!types_are_castable(from, target) &&
+        !(from->type == TYPE_UNION && target->type == TYPE_STRUCT &&
+          union_accepts_type(from, target))) {
       auto error = Error("Invalid cast", expr->start, expr->end)
                        .with_hint(std::format("Cannot cast `{}` to `{}`",
                                               from->to_string(),

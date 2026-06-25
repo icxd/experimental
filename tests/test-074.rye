@@ -1,0 +1,38 @@
+/// 0
+struct IntExpr {
+  value int;
+}
+
+struct BoolExpr {
+  value bool;
+}
+
+struct Expr {
+  type int;
+  data union { IntExpr, BoolExpr };
+}
+
+proc main() int {
+  var e = Expr{
+    type = 0,
+    data = IntExpr{value = 42},
+  };
+
+  var by_cast = cast(IntExpr) e.data;
+  if by_cast.value != 42 {
+    return 1;
+  }
+
+  var by_assign IntExpr = e.data;
+  if by_assign.value != 42 {
+    return 2;
+  }
+
+  e.data = BoolExpr{value = true};
+  var bool_data BoolExpr = e.data;
+  if !bool_data.value {
+    return 3;
+  }
+
+  return 0;
+}

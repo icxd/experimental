@@ -25,17 +25,17 @@ struct Expr {
 
 proc visit(e *Expr) void {
   if e.type == .INT {
-    var data = cast(*IntExpr) &e.data;
+    var data = cast(IntExpr) e.data;
     var _ = io:print_int(data.value);
   } else if e.type == .BOOL {
-    var data = cast(*BoolExpr) &e.data;
+    var data BoolExpr = e.data;
     if data.value {
       var _ = io:print_string("true");
     } else {
       var _ = io:print_string("false");
     }
   } else if e.type == .VAR {
-    var data = cast(*VarExpr) &e.data;
+    var data VarExpr = e.data;
     var _ = io:print_string(data.name);
   }
 

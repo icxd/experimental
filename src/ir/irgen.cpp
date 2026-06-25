@@ -408,6 +408,20 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
 
   case EXPR_CAST: {
     auto cast_ = std::get<expr::Cast *>(expr->data);
+    Type *target = expr->expr_type;
+    Type *from = cast_->expr->expr_type;
+    if (from != nullptr && from->type == TYPE_UNION && target != nullptr &&
+        target->type == TYPE_STRUCT) {
+      Operand src = gen_expr(cast_->expr, fn);
+      if (src.type != OPERAND_VARIABLE)
+        PANIC("union member cast requires variable operand");
+      std::string temp = std::format("__cast_tmp_{}", _struct_tmp_counter++);
+      size_t copy_size = type_size(target);
+      fn->variable_sizes[temp] = copy_size;
+      Operand dst = Operand::Variable(temp);
+      copy_aggregate(fn, dst, src, copy_size);
+      return dst;
+    }
     return gen_expr(cast_->expr, fn);
   }
 
@@ -530,9 +544,12 @@ Operand Generator::gen_expr(Expr *expr, Function *fn) {
     size_t offset = field_offset(field);
     Operand base = gen_field_load_base(field->base, fn);
     Type *field_type = expr->expr_type;
-    if (field_type->type == TYPE_STRUCT || field_type->type == TYPE_TUPLE) {
+    if (field_type->type == TYPE_STRUCT || field_type->type == TYPE_TUPLE ||
+        field_type->type == TYPE_UNION) {
       std::string temp = std::format("__field_tmp_{}", _struct_tmp_counter++);
-      size_t size = aggregate_size(field_type);
+      size_t size = field_type->type == TYPE_UNION
+                          ? union_size(field_type)
+                          : aggregate_size(field_type);
       fn->variable_sizes[temp] = size;
       Operand dst = Operand::Variable(temp);
       copy_aggregate_from_offset(fn, dst, base, static_cast<int64_t>(offset),
