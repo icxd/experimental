@@ -107,6 +107,8 @@ private:
   std::optional<CheckedEnum> find_local_enum(std::string_view name);
   ErrorOr<CheckedEnum> find_imported_enum(std::string_view name, size_t start,
                                           size_t end);
+  ErrorOr<CheckedEnum> find_imported_enum_by_member(std::string_view member,
+                                                    size_t start, size_t end);
   Type *make_enum_type(std::string_view name, size_t start, size_t end);
   bool union_accepts_type(Type *union_type, Type *member_type) const;
   size_t type_size(Type *type);

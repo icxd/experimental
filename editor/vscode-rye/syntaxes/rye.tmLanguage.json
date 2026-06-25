@@ -51,7 +51,7 @@
     },
     "keywords": {
       "name": "keyword",
-      "match": "\\b(proc|struct|var|const|import|extern|comptime|sizeof|cast|if|else|for|while|break|continue|return|when)\\b"
+      "match": "\\b(proc|struct|enum|union|var|const|import|extern|comptime|sizeof|cast|if|else|for|while|break|continue|return|when)\\b"
     },
     "types": {
       "name": "support.type",
@@ -67,6 +67,10 @@
     },
     "operators": {
       "patterns": [
+        {
+          "name": "variable.other.enummember",
+          "match": "(?<=\\.)\\s*([A-Za-z_][A-Za-z0-9_]*)\\b"
+        },
         {
           "name": "keyword.operator",
           "match": "&&|\\|\\||!|==|!=|<=|>=|<|>|\\+|-|\\*|/|&|\\*|="

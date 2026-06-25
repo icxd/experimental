@@ -1,0 +1,27 @@
+/// 0
+enum ExprType {
+  INT,
+  BOOL,
+}
+
+struct Expr {
+  type ExprType;
+}
+
+proc is_int(e Expr) bool {
+  return e.type == .INT;
+}
+
+proc main() int {
+  var e = Expr{type = .INT};
+  if e.type == .INT {
+    return 0;
+  }
+  if is_int(e) {
+    return 0;
+  }
+  if .INT == e.type {
+    return 0;
+  }
+  return 1;
+}

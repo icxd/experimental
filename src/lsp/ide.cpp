@@ -107,6 +107,368 @@ bool offset_in_token(size_t offset, size_t start, size_t end) {
   return offset >= start && offset < end;
 }
 
+Expr *find_expr_containing_offset(Expr *expr, size_t offset) {
+  if (expr == nullptr || offset < expr->start || offset >= expr->end)
+    return nullptr;
+
+  switch (expr->type) {
+  case EXPR_BINARY: {
+    auto *bin = std::get<expr::Binary *>(expr->data);
+    if (Expr *inner = find_expr_containing_offset(bin->rhs, offset))
+      return inner;
+    if (Expr *inner = find_expr_containing_offset(bin->lhs, offset))
+      return inner;
+    return expr;
+  }
+  case EXPR_GROUP:
+    if (Expr *inner =
+            find_expr_containing_offset(std::get<expr::Group *>(expr->data)->expr,
+                                        offset))
+      return inner;
+    return expr;
+  case EXPR_NOT:
+    if (Expr *inner =
+            find_expr_containing_offset(std::get<expr::Not *>(expr->data)->expr,
+                                        offset))
+      return inner;
+    return expr;
+  case EXPR_REF:
+    if (Expr *inner =
+            find_expr_containing_offset(std::get<expr::Ref *>(expr->data)->expr,
+                                        offset))
+      return inner;
+    return expr;
+  case EXPR_DEREF:
+    if (Expr *inner =
+            find_expr_containing_offset(std::get<expr::Deref *>(expr->data)->expr,
+                                        offset))
+      return inner;
+    return expr;
+  case EXPR_FIELD: {
+    auto *field = std::get<expr::Field *>(expr->data);
+    if (offset_in_token(offset, field->field.start, field->field.end))
+      return expr;
+    if (Expr *inner = find_expr_containing_offset(field->base, offset))
+      return inner;
+    return expr;
+  }
+  case EXPR_CALL: {
+    auto *call = std::get<expr::Call *>(expr->data);
+    for (Expr *arg: call->arguments) {
+      if (Expr *inner = find_expr_containing_offset(arg, offset))
+        return inner;
+    }
+    return expr;
+  }
+  case EXPR_STRUCT_LIT: {
+    auto *lit = std::get<expr::StructLit *>(expr->data);
+    for (const auto &field: lit->fields) {
+      if (Expr *inner = find_expr_containing_offset(field.value, offset))
+        return inner;
+    }
+    return expr;
+  }
+  case EXPR_CAST: {
+    auto *cast_ = std::get<expr::Cast *>(expr->data);
+    if (Expr *inner = find_expr_containing_offset(cast_->expr, offset))
+      return inner;
+    return expr;
+  }
+  case EXPR_INDEX: {
+    auto *index = std::get<expr::Index *>(expr->data);
+    if (Expr *inner = find_expr_containing_offset(index->index, offset))
+      return inner;
+    if (Expr *inner = find_expr_containing_offset(index->base, offset))
+      return inner;
+    return expr;
+  }
+  case EXPR_TUPLE: {
+    auto *tuple = std::get<expr::TupleLit *>(expr->data);
+    for (Expr *element: tuple->elements) {
+      if (Expr *inner = find_expr_containing_offset(element, offset))
+        return inner;
+    }
+    return expr;
+  }
+  default:
+    return expr;
+  }
+}
+
+Expr *find_expr_in_stmts(const std::vector<Stmt *> &stmts, size_t offset) {
+  for (Stmt *stmt: stmts) {
+    if (offset < stmt->start || offset >= stmt->end)
+      continue;
+    switch (stmt->type) {
+    case STMT_EXPR: {
+      auto *expr_stmt = std::get<stmt::ExprStmt *>(stmt->data);
+      if (Expr *expr = find_expr_containing_offset(expr_stmt->expr, offset))
+        return expr;
+      break;
+    }
+    case STMT_VAR: {
+      auto *var = std::get<stmt::Var *>(stmt->data);
+      if (var->value.has_value()) {
+        if (Expr *expr = find_expr_containing_offset(var->value.value(), offset))
+          return expr;
+      }
+      break;
+    }
+    case STMT_RETURN: {
+      auto *ret = std::get<stmt::Return *>(stmt->data);
+      if (ret->value.has_value()) {
+        if (Expr *expr = find_expr_containing_offset(ret->value.value(), offset))
+          return expr;
+      }
+      break;
+    }
+    case STMT_ASSIGN: {
+      auto *assign = std::get<stmt::Assign *>(stmt->data);
+      if (Expr *expr = find_expr_containing_offset(assign->value, offset))
+        return expr;
+      break;
+    }
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      if (Expr *expr = find_expr_containing_offset(iff->cond, offset))
+        return expr;
+      if (Expr *expr = find_expr_in_stmts(iff->then_block, offset))
+        return expr;
+      if (Expr *expr = find_expr_in_stmts(iff->else_block, offset))
+        return expr;
+      break;
+    }
+    case STMT_WHILE: {
+      auto *loop = std::get<stmt::While *>(stmt->data);
+      if (Expr *expr = find_expr_containing_offset(loop->cond, offset))
+        return expr;
+      if (Expr *expr = find_expr_in_stmts(loop->body, offset))
+        return expr;
+      break;
+    }
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr) {
+        if (Expr *expr = find_expr_in_stmts({loop->init}, offset))
+          return expr;
+      }
+      if (Expr *expr = find_expr_containing_offset(loop->cond, offset))
+        return expr;
+      if (loop->step != nullptr) {
+        if (Expr *expr = find_expr_in_stmts({loop->step}, offset))
+          return expr;
+      }
+      if (Expr *expr = find_expr_in_stmts(loop->body, offset))
+        return expr;
+      break;
+    }
+    case STMT_BLOCK: {
+      auto *block = std::get<stmt::Block *>(stmt->data);
+      if (Expr *expr = find_expr_in_stmts(block->stmts, offset))
+        return expr;
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  return nullptr;
+}
+
+Expr *find_expr_in_module(const ParsedModule &module, size_t offset) {
+  for (Decl *decl: module.decls) {
+    if (decl->type != DECL_PROC)
+      continue;
+    auto *proc = std::get<decl::Proc *>(decl->data);
+    if (Expr *expr = find_expr_in_stmts(proc->body, offset))
+      return expr;
+  }
+  return nullptr;
+}
+
+Expr *stmt_expr_root_at_offset(Stmt *stmt, size_t offset) {
+  if (offset < stmt->start || offset >= stmt->end)
+    return nullptr;
+  switch (stmt->type) {
+  case STMT_EXPR:
+    return std::get<stmt::ExprStmt *>(stmt->data)->expr;
+  case STMT_VAR: {
+    auto *var = std::get<stmt::Var *>(stmt->data);
+    return var->value.has_value() ? var->value.value() : nullptr;
+  }
+  case STMT_RETURN: {
+    auto *ret = std::get<stmt::Return *>(stmt->data);
+    return ret->value.has_value() ? ret->value.value() : nullptr;
+  }
+  case STMT_ASSIGN:
+    return std::get<stmt::Assign *>(stmt->data)->value;
+  case STMT_IF:
+    return std::get<stmt::If *>(stmt->data)->cond;
+  case STMT_WHILE:
+    return std::get<stmt::While *>(stmt->data)->cond;
+  case STMT_FOR:
+    return std::get<stmt::For *>(stmt->data)->cond;
+  default:
+    return nullptr;
+  }
+}
+
+Expr *find_stmt_expr_root_in_stmts(const std::vector<Stmt *> &stmts,
+                                   size_t offset) {
+  for (Stmt *stmt: stmts) {
+    if (offset < stmt->start || offset >= stmt->end) {
+      continue;
+    }
+    if (Expr *root = stmt_expr_root_at_offset(stmt, offset))
+      return root;
+    switch (stmt->type) {
+    case STMT_IF: {
+      auto *iff = std::get<stmt::If *>(stmt->data);
+      if (Expr *root = find_stmt_expr_root_in_stmts(iff->then_block, offset))
+        return root;
+      return find_stmt_expr_root_in_stmts(iff->else_block, offset);
+    }
+    case STMT_WHILE:
+      return find_stmt_expr_root_in_stmts(
+          std::get<stmt::While *>(stmt->data)->body, offset);
+    case STMT_FOR: {
+      auto *loop = std::get<stmt::For *>(stmt->data);
+      if (loop->init != nullptr) {
+        if (Expr *root = find_stmt_expr_root_in_stmts({loop->init}, offset))
+          return root;
+      }
+      if (loop->step != nullptr) {
+        if (Expr *root = find_stmt_expr_root_in_stmts({loop->step}, offset))
+          return root;
+      }
+      return find_stmt_expr_root_in_stmts(loop->body, offset);
+    }
+    case STMT_BLOCK:
+      return find_stmt_expr_root_in_stmts(
+          std::get<stmt::Block *>(stmt->data)->stmts, offset);
+    default:
+      break;
+    }
+  }
+  return nullptr;
+}
+
+Expr *find_stmt_expr_root_in_module(const ParsedModule &module, size_t offset) {
+  for (Decl *decl: module.decls) {
+    if (decl->type != DECL_PROC)
+      continue;
+    auto *proc = std::get<decl::Proc *>(decl->data);
+    if (Expr *root = find_stmt_expr_root_in_stmts(proc->body, offset))
+      return root;
+  }
+  return nullptr;
+}
+
+std::optional<CheckedEnum>
+find_registry_enum(const ModuleRegistry &registry, std::string_view module,
+                   std::string_view name) {
+  if (auto enum_ = registry.find_enum(module, name); enum_.has_value())
+    return enum_;
+  for (const auto &entry: registry.modules()) {
+    if (auto enum_ = registry.find_enum(entry.first, name); enum_.has_value())
+      return enum_;
+  }
+  return std::nullopt;
+}
+
+Type *enum_type_for_enum_case_in_tree(const ModuleRegistry &registry,
+                                      std::string_view module_name, Expr *root,
+                                      const Expr *case_expr) {
+  if (root == nullptr)
+    return nullptr;
+
+  if (root->type == EXPR_BINARY) {
+    auto *bin = std::get<expr::Binary *>(root->data);
+    if (bin->rhs == case_expr && bin->lhs->expr_type != nullptr &&
+        bin->lhs->expr_type->type == TYPE_ENUM)
+      return bin->lhs->expr_type;
+    if (bin->lhs == case_expr && bin->rhs->expr_type != nullptr &&
+        bin->rhs->expr_type->type == TYPE_ENUM)
+      return bin->rhs->expr_type;
+    Type *lhs_type =
+        enum_type_for_enum_case_in_tree(registry, module_name, bin->lhs,
+                                        case_expr);
+    if (lhs_type != nullptr)
+      return lhs_type;
+    return enum_type_for_enum_case_in_tree(registry, module_name, bin->rhs,
+                                           case_expr);
+  }
+
+  if (root->type == EXPR_STRUCT_LIT) {
+    auto *lit = std::get<expr::StructLit *>(root->data);
+    for (const auto &field: lit->fields) {
+      if (field.value != case_expr)
+        continue;
+      std::optional<CheckedStruct> strukt =
+          registry.find_struct(module_name, lit->type_name.id_value);
+      if (!strukt.has_value()) {
+        for (const auto &entry: registry.modules()) {
+          strukt = registry.find_struct(entry.first, lit->type_name.id_value);
+          if (strukt.has_value())
+            break;
+        }
+      }
+      if (strukt.has_value()) {
+        for (const auto &struct_field: strukt->fields) {
+          if (struct_field.name == field.name.id_value &&
+              struct_field.type->type == TYPE_ENUM)
+            return struct_field.type;
+        }
+      }
+    }
+    for (const auto &field: lit->fields) {
+      Type *type =
+          enum_type_for_enum_case_in_tree(registry, module_name, field.value,
+                                          case_expr);
+      if (type != nullptr)
+        return type;
+    }
+  }
+
+  if (root->type == EXPR_GROUP)
+    return enum_type_for_enum_case_in_tree(
+        registry, module_name,
+        std::get<expr::Group *>(root->data)->expr, case_expr);
+  if (root->type == EXPR_NOT)
+    return enum_type_for_enum_case_in_tree(
+        registry, module_name, std::get<expr::Not *>(root->data)->expr,
+        case_expr);
+  if (root->type == EXPR_CAST)
+    return enum_type_for_enum_case_in_tree(
+        registry, module_name, std::get<expr::Cast *>(root->data)->expr,
+        case_expr);
+
+  return nullptr;
+}
+
+void add_enum_member_completions(const ModuleRegistry &registry,
+                                 std::string_view module_name,
+                                 std::string_view enum_name,
+                                 std::string_view prefix,
+                                 std::vector<CompletionItem> &items,
+                                 const auto &add_unique) {
+  if (auto enum_ = find_registry_enum(registry, module_name, enum_name);
+      enum_.has_value()) {
+    for (const auto &member: enum_->members) {
+      if (member.name == "count")
+        continue;
+      if (!prefix.empty() && !member.name.starts_with(prefix))
+        continue;
+      add_unique(CompletionItem{
+          .label = std::string(member.name),
+          .detail = std::format("enum {}", enum_name),
+          .insert_text = std::string(member.name),
+          .kind = 21,
+      });
+    }
+  }
+}
+
 Expr *find_call_at_offset(Expr *expr, size_t offset) {
   if (expr == nullptr)
     return nullptr;
@@ -269,6 +631,7 @@ Expr *find_expr_at_offset(Expr *expr, size_t offset) {
   case EXPR_CALL:
   case EXPR_INDEX:
   case EXPR_CAST:
+  case EXPR_ENUM_CASE:
     return expr;
   default:
     return expr;
@@ -587,9 +950,7 @@ std::optional<Sym> resolve_symbol(const Project &project,
     }
   }
 
-  Expr *expr = find_call_in_module(*module, offset);
-  if (expr != nullptr)
-    expr = find_expr_at_offset(expr, offset);
+  Expr *expr = find_expr_in_module(*module, offset);
 
   if (expr != nullptr && expr->type == EXPR_VAR) {
     auto *var = std::get<expr::Var *>(expr->data);
@@ -674,10 +1035,34 @@ std::optional<Sym> resolve_symbol(const Project &project,
 
   if (expr != nullptr && expr->type == EXPR_FIELD) {
     auto *field = std::get<expr::Field *>(expr->data);
-    if (field->base->expr_type != nullptr &&
-        field->base->expr_type->type == TYPE_STRUCT) {
+    if (field->base->type == EXPR_VAR) {
+      auto *var = std::get<expr::Var *>(field->base->data);
+      if (!var->module.has_value()) {
+        for (const auto &[path, mod]: project.modules()) {
+          if (Decl *decl = find_top_level_decl(const_cast<ParsedModule &>(mod),
+                                               var->var.id_value, DECL_ENUM)) {
+            auto *enum_ = std::get<decl::Enum *>(decl->data);
+            for (const auto &member: enum_->members) {
+              if (member.name.id_value == field->field.id_value) {
+                return Sym{.kind = SymKind::Enum,
+                           .module_name = std::string(mod.module_name),
+                           .name = std::string(member.name.id_value),
+                           .file_path = mod.abs_path,
+                           .def_start = member.name.start,
+                           .def_end = member.name.end,
+                           .renamable = !mod.is_runtime};
+              }
+            }
+          }
+        }
+      }
+    }
+    Type *struct_type = field->base->expr_type != nullptr
+                            ? field->base->expr_type->as_struct_for_field_access()
+                            : nullptr;
+    if (struct_type != nullptr) {
       std::string_view struct_name =
-          std::get<type::Struct *>(field->base->expr_type->data)->name;
+          std::get<type::Struct *>(struct_type->data)->name;
       for (const auto &[path, mod]: project.modules()) {
         if (Decl *decl = find_top_level_decl(const_cast<ParsedModule &>(mod),
                                              struct_name, DECL_STRUCT)) {
@@ -694,6 +1079,40 @@ std::optional<Sym> resolve_symbol(const Project &project,
                          .renamable = !mod.is_runtime};
             }
           }
+        }
+      }
+    }
+  }
+
+  if (expr != nullptr && expr->type == EXPR_ENUM_CASE) {
+    auto *case_ = std::get<expr::EnumCase *>(expr->data);
+    std::string_view member_name = case_->member.id_value;
+    std::optional<std::string_view> enum_name;
+
+    if (Expr *root = find_stmt_expr_root_in_module(*module, offset);
+        root != nullptr) {
+      if (Type *enum_type =
+              enum_type_for_enum_case_in_tree(project.registry(),
+                                              module->module_name, root, expr);
+          enum_type != nullptr && enum_type->type == TYPE_ENUM)
+        enum_name = std::get<type::Enum *>(enum_type->data)->name;
+    }
+
+    for (Decl *decl: module->decls) {
+      if (decl->type != DECL_ENUM)
+        continue;
+      auto *enum_ = std::get<decl::Enum *>(decl->data);
+      if (enum_name.has_value() && enum_->name.id_value != enum_name.value())
+        continue;
+      for (const auto &member: enum_->members) {
+        if (member.name.id_value == member_name) {
+          return Sym{.kind = SymKind::Enum,
+                     .module_name = std::string(module->module_name),
+                     .name = std::string(member.name.id_value),
+                     .file_path = module->abs_path,
+                     .def_start = member.name.start,
+                     .def_end = member.name.end,
+                     .renamable = !module->is_runtime};
         }
       }
     }
@@ -820,14 +1239,24 @@ void collect_refs_in_expr(Expr *expr, const ParsedModule &mod, const Sym &sym,
   }
   case EXPR_FIELD: {
     auto *field = std::get<expr::Field *>(expr->data);
+    if (sym.kind == SymKind::Enum && field->field.id_value == sym.name)
+      push_location(out, mod, field->field.start, field->field.end);
     if (sym.kind == SymKind::StructField &&
         field->field.id_value == sym.name &&
-        field->base->expr_type != nullptr &&
-        field->base->expr_type->type == TYPE_STRUCT &&
-        std::get<type::Struct *>(field->base->expr_type->data)->name ==
-            sym.struct_name)
-      push_location(out, mod, field->field.start, field->field.end);
+        field->base->expr_type != nullptr) {
+      Type *struct_type = field->base->expr_type->as_struct_for_field_access();
+      if (struct_type != nullptr &&
+          std::get<type::Struct *>(struct_type->data)->name ==
+              sym.struct_name)
+        push_location(out, mod, field->field.start, field->field.end);
+    }
     collect_refs_in_expr(field->base, mod, sym, current_proc, out);
+    return;
+  }
+  case EXPR_ENUM_CASE: {
+    auto *case_ = std::get<expr::EnumCase *>(expr->data);
+    if (sym.kind == SymKind::Enum && case_->member.id_value == sym.name)
+      push_location(out, mod, case_->member.start, case_->member.end);
     return;
   }
   case EXPR_STRUCT_LIT: {
@@ -1490,12 +1919,9 @@ std::optional<HoverInfo> IdeService::hover(std::string_view abs_path,
       return HoverInfo{.text = proc_signature(*proc)};
   }
 
-  Expr *expr = find_call_in_module(*module, offset);
-  if (expr != nullptr) {
-    expr = find_expr_at_offset(expr, offset);
-    if (expr != nullptr && expr->expr_type != nullptr)
-      return HoverInfo{.text = type_to_string(expr->expr_type)};
-  }
+  Expr *expr = find_expr_in_module(*module, offset);
+  if (expr != nullptr && expr->expr_type != nullptr)
+    return HoverInfo{.text = type_to_string(expr->expr_type)};
 
   for (const auto &entry: _project.registry().modules()) {
     for (const auto &proc: entry.second.procs) {
@@ -1505,6 +1931,10 @@ std::optional<HoverInfo> IdeService::hover(std::string_view abs_path,
     for (const auto &strukt: entry.second.structs) {
       if (strukt.name == word.value())
         return HoverInfo{.text = std::format("struct {}", strukt.name)};
+    }
+    for (const auto &enum_: entry.second.enums) {
+      if (enum_.name == word.value())
+        return HoverInfo{.text = std::format("enum {}", enum_.name)};
     }
     for (const auto &konst: entry.second.consts) {
       if (konst.name == word.value())
@@ -1558,15 +1988,36 @@ IdeService::completion(std::string_view abs_path, size_t line,
   };
 
   if (is_after_dot(module->source, offset)) {
-    Expr *call = find_call_in_module(*module, offset);
-    if (call != nullptr) {
-      Expr *expr = find_expr_at_offset(call, offset);
-      if (expr != nullptr && expr->type == EXPR_FIELD) {
+    Expr *expr = find_expr_in_module(*module, offset);
+    if (expr != nullptr) {
+      if (expr->type == EXPR_FIELD) {
         auto *field = std::get<expr::Field *>(expr->data);
+        if (field->base->type == EXPR_VAR) {
+          auto *var = std::get<expr::Var *>(field->base->data);
+          if (!var->module.has_value()) {
+            if (auto enum_ = find_registry_enum(_project.registry(),
+                                                module->module_name,
+                                                var->var.id_value);
+                enum_.has_value()) {
+              add_enum_member_completions(_project.registry(), module->module_name,
+                                          enum_->name, prefix, items, add_unique);
+            }
+          }
+        }
         if (field->base->expr_type != nullptr &&
-            field->base->expr_type->type == TYPE_STRUCT) {
+            field->base->expr_type->type == TYPE_ENUM) {
+          std::string_view enum_name =
+              std::get<type::Enum *>(field->base->expr_type->data)->name;
+          add_enum_member_completions(_project.registry(), module->module_name,
+                                      enum_name, prefix, items, add_unique);
+        }
+        Type *struct_type =
+            field->base->expr_type != nullptr
+                ? field->base->expr_type->as_struct_for_field_access()
+                : nullptr;
+        if (struct_type != nullptr) {
           std::string_view struct_name =
-              std::get<type::Struct *>(field->base->expr_type->data)->name;
+              std::get<type::Struct *>(struct_type->data)->name;
           auto strukt = _project.registry().find_struct(module->module_name,
                                                         struct_name);
           if (!strukt.has_value()) {
@@ -1578,8 +2029,7 @@ IdeService::completion(std::string_view abs_path, size_t line,
           }
           if (strukt.has_value()) {
             for (const auto &f: strukt->fields) {
-              if (!prefix.empty() &&
-                  !std::string(f.name).starts_with(prefix))
+              if (!prefix.empty() && !std::string(f.name).starts_with(prefix))
                 continue;
               add_unique(CompletionItem{
                   .label = std::string(f.name),
@@ -1590,15 +2040,29 @@ IdeService::completion(std::string_view abs_path, size_t line,
             }
           }
         }
+      } else if (expr->type == EXPR_ENUM_CASE) {
+        if (Expr *root = find_stmt_expr_root_in_module(*module, offset);
+            root != nullptr) {
+          if (Type *enum_type =
+                  enum_type_for_enum_case_in_tree(_project.registry(),
+                                                  module->module_name, root,
+                                                  expr);
+              enum_type != nullptr && enum_type->type == TYPE_ENUM) {
+            std::string_view enum_name =
+                std::get<type::Enum *>(enum_type->data)->name;
+            add_enum_member_completions(_project.registry(), module->module_name,
+                                        enum_name, prefix, items, add_unique);
+          }
+        }
       }
     }
     return items;
   }
 
   static const char *keywords[] = {
-      "proc",  "var",   "const",  "struct", "import", "extern", "return",
-      "if",    "else",  "for",    "while",  "break",  "continue",
-      "when",  "comptime", "sizeof", "cast", "true", "false",
+      "proc",  "var",   "const",  "struct", "enum", "union", "import",
+      "extern", "return", "if",    "else",  "for",    "while", "break",
+      "continue", "when",  "comptime", "sizeof", "cast", "true", "false",
   };
   for (const char *kw: keywords) {
     if (!prefix.empty() && !std::string_view(kw).starts_with(prefix))
@@ -1642,6 +2106,17 @@ IdeService::completion(std::string_view abs_path, size_t line,
       add_unique(CompletionItem{
           .label = label,
           .detail = "struct",
+          .insert_text = label,
+          .kind = 7,
+      });
+    }
+    for (const auto &enum_: entry.second.enums) {
+      std::string label = std::string(enum_.name);
+      if (!prefix.empty() && !label.starts_with(prefix))
+        continue;
+      add_unique(CompletionItem{
+          .label = label,
+          .detail = "enum",
           .insert_text = label,
           .kind = 7,
       });

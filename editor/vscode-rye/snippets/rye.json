@@ -63,5 +63,28 @@
       "}"
     ],
     "description": "If statement"
+  },
+  "Else if": {
+    "prefix": "elif",
+    "body": [
+      "else if ${1:condition} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Else if statement"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:MEMBER},",
+      "}"
+    ],
+    "description": "Enum declaration"
+  },
+  "Union field": {
+    "prefix": "union",
+    "body": "union { ${1:Type} }",
+    "description": "Inline union type"
   }
 }

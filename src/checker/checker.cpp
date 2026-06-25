@@ -668,6 +668,46 @@ ErrorOr<CheckedEnum> Checker::find_imported_enum(std::string_view name,
   return *found;
 }
 
+ErrorOr<CheckedEnum> Checker::find_imported_enum_by_member(
+    std::string_view member, size_t start, size_t end) {
+  if (_registry == nullptr || _imports.empty()) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared enum member `.{}`", member), start,
+              end));
+  }
+
+  std::optional<CheckedEnum> found;
+  for (const auto &import_module: _imports) {
+    auto it = _registry->modules().find(import_module);
+    if (it == _registry->modules().end())
+      continue;
+    for (const CheckedEnum &enum_: it->second.enums) {
+      for (const auto &enum_member: enum_.members) {
+        if (enum_member.name != member)
+          continue;
+        if (found.has_value()) {
+          return std::unexpected(
+              Error(std::format("Ambiguous import for enum member `.{}`",
+                                member),
+                    start, end)
+                  .with_hint("Multiple imported modules export this enum "
+                             "member; use a qualified name"));
+        }
+        found = enum_;
+        break;
+      }
+    }
+  }
+
+  if (!found.has_value()) {
+    return std::unexpected(
+        Error(std::format("Use of undeclared enum member `.{}`", member), start,
+              end));
+  }
+
+  return *found;
+}
+
 ErrorOr<CheckedEnum> Checker::resolve_enum(std::string_view name, size_t start,
                                            size_t end) {
   if (auto local = find_local_enum(name); local.has_value())
@@ -1045,10 +1085,25 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope, Type *expected) {
   case EXPR_BINARY: {
     expr::Binary *binary = std::get<expr::Binary *>(expr->data);
 
-    Type *lhs_type = try$(check_expr(binary->lhs, scope));
+    Type *lhs_type = nullptr;
+    Type *rhs_type = nullptr;
+    if (binary->lhs->type == EXPR_ENUM_CASE &&
+        binary->rhs->type != EXPR_ENUM_CASE) {
+      rhs_type = try$(check_expr(binary->rhs, scope));
+      binary->rhs->expr_type = rhs_type;
+      Type *expected_lhs =
+          rhs_type->type == TYPE_ENUM ? rhs_type : nullptr;
+      lhs_type = try$(check_expr(binary->lhs, scope, expected_lhs));
+    } else {
+      lhs_type = try$(check_expr(binary->lhs, scope));
+      binary->lhs->expr_type = lhs_type;
+      Type *expected_rhs = nullptr;
+      if (lhs_type->type == TYPE_ENUM &&
+          binary->rhs->type == EXPR_ENUM_CASE)
+        expected_rhs = lhs_type;
+      rhs_type = try$(check_expr(binary->rhs, scope, expected_rhs));
+    }
     binary->lhs->expr_type = lhs_type;
-
-    Type *rhs_type = try$(check_expr(binary->rhs, scope));
     binary->rhs->expr_type = rhs_type;
 
     if (binary->op == expr::Binary::BINOP_PLUS ||
@@ -1483,18 +1538,47 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope, Type *expected) {
 
   case EXPR_ENUM_CASE: {
     auto *case_ = std::get<expr::EnumCase *>(expr->data);
-    if (expected == nullptr || expected->type != TYPE_ENUM) {
-      return std::unexpected(
-          Error("Enum case requires a known enum type context", expr->start,
-                expr->end)
-              .with_hint("Use `.MEMBER` where an enum value is expected, or "
-                         "use a qualified name like `EnumName.MEMBER`"));
+    std::string_view member_name = case_->member.id_value;
+    std::string_view enum_name;
+
+    if (expected != nullptr && expected->type == TYPE_ENUM) {
+      enum_name = std::get<type::Enum *>(expected->data)->name;
+    } else {
+      std::vector<CheckedEnum> matches{};
+      for (const CheckedEnum &enum_: _enums) {
+        for (const auto &member: enum_.members) {
+          if (member.name == member_name) {
+            matches.push_back(enum_);
+            break;
+          }
+        }
+      }
+      if (matches.empty()) {
+        if (auto imported = find_imported_enum_by_member(member_name, expr->start,
+                                                      expr->end);
+            imported.has_value()) {
+          enum_name = imported->name;
+        } else {
+          return std::unexpected(
+              Error("Enum case requires a known enum type context", expr->start,
+                    expr->end)
+                  .with_hint("Use `.MEMBER` where an enum value is expected, "
+                             "compare against an enum-typed value, or use a "
+                             "qualified name like `EnumName.MEMBER`"));
+        }
+      } else if (matches.size() > 1) {
+        return std::unexpected(
+            Error(std::format("Ambiguous enum case `.{}`", member_name),
+                  case_->member.start, case_->member.end)
+                .with_hint("Use a qualified name like `EnumName.MEMBER`"));
+      } else {
+        enum_name = matches.front().name;
+      }
     }
-    std::string_view enum_name =
-        std::get<type::Enum *>(expected->data)->name;
+
     CheckedEnum enum_ = try$(resolve_enum(enum_name, expr->start, expr->end));
     for (const auto &member: enum_.members) {
-      if (member.name == case_->member.id_value) {
+      if (member.name == member_name) {
         type = make_enum_type(enum_name, expr->start, expr->end);
         break;
       }
@@ -1502,7 +1586,7 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope, Type *expected) {
     if (type == nullptr) {
       return std::unexpected(
           Error(std::format("Enum `{}` has no member `{}`", enum_name,
-                            case_->member.id_value),
+                            member_name),
                 case_->member.start, case_->member.end));
     }
     break;
