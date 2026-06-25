@@ -328,6 +328,50 @@ ErrorOr<Stmt *> Parser::parse_stmt() {
     });
   } else if (peek().type == TOK_FOR) {
     Token for_ = try$(expect(TOK_FOR, "Expected `for`"));
+    if (peek().type == TOK_VAR) {
+      size_t var_save = _pos;
+      Token var_kw = try$(expect(TOK_VAR, "Expected `var`"));
+      Token id = try$(expect(TOK_ID, "Expected an identifier after `var`"));
+
+      if (peek().type == TOK_IN) {
+        Token in = try$(expect(TOK_IN, "Expected `in`"));
+        Expr *iterable = try$(parse_expr(0, false));
+        std::vector<Stmt *> body = try$(parse_block());
+        auto *binding = _arena.create<stmt::Var>(
+            stmt::Var{.name = id, .type = nullptr});
+        return _arena.create<Stmt>(Stmt{
+            .type = STMT_FOR_IN,
+            .start = for_.start,
+            .end = previous().end,
+            .data = _arena.create<stmt::ForIn>(
+                stmt::ForIn{.binding = binding, .iterable = iterable,
+                            .body = body}),
+        });
+      }
+
+      Type *binding_type = nullptr;
+      if (peek().type != TOK_EQ) {
+        binding_type = try$(parse_type());
+        if (peek().type == TOK_IN) {
+          Token in = try$(expect(TOK_IN, "Expected `in`"));
+          Expr *iterable = try$(parse_expr(0, false));
+          std::vector<Stmt *> body = try$(parse_block());
+          auto *binding = _arena.create<stmt::Var>(
+              stmt::Var{.name = id, .type = binding_type});
+          return _arena.create<Stmt>(Stmt{
+              .type = STMT_FOR_IN,
+              .start = for_.start,
+              .end = previous().end,
+              .data = _arena.create<stmt::ForIn>(
+                  stmt::ForIn{.binding = binding, .iterable = iterable,
+                              .body = body}),
+          });
+        }
+      }
+
+      _pos = var_save;
+    }
+
     Stmt *init = try$(parse_stmt());
     Expr *cond = try$(parse_expr(0, false));
     try$(expect(TOK_SEMICOLON, "Expected `;` after for-condition"));

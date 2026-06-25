@@ -276,6 +276,17 @@ inline void print_stmt(std::ostream &out, Stmt *stmt, Indent indent = {}) {
       print_stmt(out, for_->body[i],
                  indent.next(i == for_->body.size() - 1));
   } break;
+  case STMT_FOR_IN: {
+    auto *for_in = std::get<stmt::ForIn *>(stmt->data);
+    out << indent.prefix() << "for var " << for_in->binding->name.id_value;
+    if (for_in->binding->type != nullptr)
+      out << " " << for_in->binding->type->to_string();
+    out << " in ";
+    print_expr(out, for_in->iterable, indent.next(false));
+    for (size_t i = 0; i < for_in->body.size(); ++i)
+      print_stmt(out, for_in->body[i],
+                 indent.next(i == for_in->body.size() - 1));
+  } break;
   case STMT_IF: {
     auto if_ = std::get<stmt::If *>(stmt->data);
     out << "\n";

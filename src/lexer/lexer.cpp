@@ -42,6 +42,8 @@ ErrorOr<Token> Lexer::next_token() {
       type = TOK_IF;
     else if (id == "for")
       type = TOK_FOR;
+    else if (id == "in")
+      type = TOK_IN;
     else if (id == "while")
       type = TOK_WHILE;
     else if (id == "extern")

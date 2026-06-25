@@ -264,6 +264,7 @@ bool is_control_stmt(Stmt *stmt) {
   case STMT_IF:
   case STMT_WHILE:
   case STMT_FOR:
+  case STMT_FOR_IN:
   case STMT_WHEN:
   case STMT_COMPTIME_BLOCK:
     return true;
@@ -1238,6 +1239,21 @@ private:
       begin_line();
       write('}');
       newline();
+      break;
+    }
+    case STMT_FOR_IN: {
+      auto *for_in = std::get<stmt::ForIn *>(stmt->data);
+      begin_line();
+      write("for var ");
+      write(for_in->binding->name.id_value);
+      if (for_in->binding->type != nullptr) {
+        write(' ');
+        format_type(for_in->binding->type);
+      }
+      write(" in ");
+      format_expr(for_in->iterable);
+      write(' ');
+      format_block_stmts(for_in->body);
       break;
     }
     case STMT_IF:

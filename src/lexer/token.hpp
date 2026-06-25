@@ -13,6 +13,7 @@ enum TokenType {
   TOK_ELSE,
   TOK_IF,
   TOK_FOR,
+  TOK_IN,
   TOK_WHILE,
   TOK_EXTERN,
   TOK_PROC,
@@ -104,6 +105,7 @@ struct Token {
     case TOK_PLUS:      return std::format("TOK_PLUS");
     case TOK_IF:        return std::format("TOK_IF");
     case TOK_FOR:       return std::format("TOK_FOR");
+    case TOK_IN:        return std::format("TOK_IN");
     case TOK_WHILE:     return std::format("TOK_WHILE");
     case TOK_MINUS:     return std::format("TOK_MINUS");
     case TOK_STAR:      return std::format("TOK_STAR");

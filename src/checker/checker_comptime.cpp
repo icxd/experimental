@@ -467,6 +467,9 @@ ErrorOr<void> Checker::expand_comptime_stmts(std::vector<Stmt *> &stmts,
     } else if (stmt->type == STMT_FOR) {
       auto *loop = std::get<stmt::For *>(stmt->data);
       try$(expand_comptime_stmts(loop->body, scope));
+    } else if (stmt->type == STMT_FOR_IN) {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      try$(expand_for_in_stmts(loop->body, scope));
     }
 
     ++i;

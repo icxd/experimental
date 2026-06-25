@@ -132,6 +132,12 @@ namespace stmt {
     std::vector<Stmt *> body;
   };
 
+  struct ForIn {
+    stmt::Var *binding;
+    Expr *iterable;
+    std::vector<Stmt *> body;
+  };
+
   struct Break {};
 
   struct Continue {};
@@ -158,6 +164,7 @@ enum StmtType {
   STMT_ASSIGN,
   STMT_WHILE,
   STMT_FOR,
+  STMT_FOR_IN,
   STMT_BREAK,
   STMT_CONTINUE,
   STMT_WHEN,
@@ -168,8 +175,8 @@ struct Stmt {
   StmtType type;
   size_t start, end;
   std::variant<stmt::Block *, stmt::Var *, stmt::Return *, stmt::If *,
-               stmt::Assign *, stmt::While *, stmt::For *, stmt::Break *,
-               stmt::Continue *, stmt::When *, stmt::ExprStmt *,
+               stmt::Assign *, stmt::While *, stmt::For *, stmt::ForIn *,
+               stmt::Break *, stmt::Continue *, stmt::When *, stmt::ExprStmt *,
                decl::ComptimeBlock *>
       data;
 };

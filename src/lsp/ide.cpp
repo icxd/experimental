@@ -266,6 +266,14 @@ Expr *find_expr_in_stmts(const std::vector<Stmt *> &stmts, size_t offset) {
         return expr;
       break;
     }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      if (Expr *expr = find_expr_containing_offset(loop->iterable, offset))
+        return expr;
+      if (Expr *expr = find_expr_in_stmts(loop->body, offset))
+        return expr;
+      break;
+    }
     case STMT_BLOCK: {
       auto *block = std::get<stmt::Block *>(stmt->data);
       if (Expr *expr = find_expr_in_stmts(block->stmts, offset))
@@ -312,6 +320,8 @@ Expr *stmt_expr_root_at_offset(Stmt *stmt, size_t offset) {
     return std::get<stmt::While *>(stmt->data)->cond;
   case STMT_FOR:
     return std::get<stmt::For *>(stmt->data)->cond;
+  case STMT_FOR_IN:
+    return std::get<stmt::ForIn *>(stmt->data)->iterable;
   default:
     return nullptr;
   }
@@ -347,6 +357,9 @@ Expr *find_stmt_expr_root_in_stmts(const std::vector<Stmt *> &stmts,
       }
       return find_stmt_expr_root_in_stmts(loop->body, offset);
     }
+    case STMT_FOR_IN:
+      return find_stmt_expr_root_in_stmts(
+          std::get<stmt::ForIn *>(stmt->data)->body, offset);
     case STMT_BLOCK:
       return find_stmt_expr_root_in_stmts(
           std::get<stmt::Block *>(stmt->data)->stmts, offset);
@@ -578,6 +591,14 @@ Expr *find_call_in_stmts(const std::vector<Stmt *> &stmts, size_t offset) {
         return call;
       break;
     }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      if (Expr *call = find_call_at_offset(loop->iterable, offset))
+        return call;
+      if (Expr *call = find_call_in_stmts(loop->body, offset))
+        return call;
+      break;
+    }
     case STMT_BLOCK: {
       auto *block = std::get<stmt::Block *>(stmt->data);
       if (Expr *call = find_call_in_stmts(block->stmts, offset))
@@ -739,6 +760,12 @@ std::optional<Sym> find_sym_in_stmts(const ParsedModule &module,
         return sym;
       break;
     }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      if (auto sym = find_sym_in_stmts(module, proc_name, loop->body, offset))
+        return sym;
+      break;
+    }
     case STMT_BLOCK: {
       auto *block = std::get<stmt::Block *>(stmt->data);
       if (auto sym = find_sym_in_stmts(module, proc_name, block->stmts, offset))
@@ -798,6 +825,21 @@ std::optional<Sym> find_local_var_sym_in_stmts(const ParsedModule &module,
       if (loop->init != nullptr) {
         if (auto sym = find_local_var_sym_in_stmts(module, proc_name, {loop->init}, name))
           return sym;
+      }
+      if (auto sym = find_local_var_sym_in_stmts(module, proc_name, loop->body, name))
+        return sym;
+      break;
+    }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      if (loop->binding->name.id_value == name) {
+        return Sym{.kind = SymKind::LocalVar,
+                   .module_name = std::string(module.module_name),
+                   .name = std::string(loop->binding->name.id_value),
+                   .proc_name = std::string(proc_name),
+                   .file_path = module.abs_path,
+                   .def_start = loop->binding->name.start,
+                   .def_end = loop->binding->name.end};
       }
       if (auto sym = find_local_var_sym_in_stmts(module, proc_name, loop->body, name))
         return sym;
@@ -1010,6 +1052,12 @@ void collect_inlay_hints_in_stmts(const Project &project, const ParsedModule &mo
       collect_inlay_hints_in_expr(project, mod, loop->cond, options, out);
       if (loop->step != nullptr)
         collect_inlay_hints_in_stmts(project, mod, {loop->step}, options, out);
+      collect_inlay_hints_in_stmts(project, mod, loop->body, options, out);
+      break;
+    }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      collect_inlay_hints_in_expr(project, mod, loop->iterable, options, out);
       collect_inlay_hints_in_stmts(project, mod, loop->body, options, out);
       break;
     }
@@ -1575,6 +1623,14 @@ void collect_refs_in_stmts(const std::vector<Stmt *> &stmts,
       collect_refs_in_stmts(loop->body, mod, sym, current_proc, out);
       break;
     }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      if (loop->binding->type != nullptr)
+        collect_refs_in_type(loop->binding->type, mod, sym, out);
+      collect_refs_in_expr(loop->iterable, mod, sym, current_proc, out);
+      collect_refs_in_stmts(loop->body, mod, sym, current_proc, out);
+      break;
+    }
     case STMT_BLOCK:
       collect_refs_in_stmts(std::get<stmt::Block *>(stmt->data)->stmts, mod, sym,
                             current_proc, out);
@@ -1886,6 +1942,12 @@ void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
       collect_sem_tokens_in_stmts(loop->body, out);
       break;
     }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      collect_sem_tokens_in_expr(loop->iterable, out);
+      collect_sem_tokens_in_stmts(loop->body, out);
+      break;
+    }
     case STMT_BREAK:
     case STMT_CONTINUE:
       break;
@@ -2051,6 +2113,7 @@ void collect_folding_in_stmts(const ParsedModule &mod,
     case STMT_IF:
     case STMT_WHILE:
     case STMT_FOR:
+    case STMT_FOR_IN:
     case STMT_COMPTIME_BLOCK:
       if (end_line > start_line)
         out.push_back(FoldingRange{.start_line = start_line,
@@ -2079,6 +2142,10 @@ void collect_folding_in_stmts(const ParsedModule &mod,
       collect_folding_in_stmts(mod, loop->body, out);
       break;
     }
+    case STMT_FOR_IN:
+      collect_folding_in_stmts(
+          mod, std::get<stmt::ForIn *>(stmt->data)->body, out);
+      break;
     case STMT_BLOCK:
       collect_folding_in_stmts(mod,
                                std::get<stmt::Block *>(stmt->data)->stmts, out);
@@ -2270,6 +2337,14 @@ void collect_calls_in_stmts(const Project &project, const ParsedModule &mod,
                              callee_module, callee_name, out);
       break;
     }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      collect_calls_in_expr(project, loop->iterable, mod, caller_proc,
+                            callee_module, callee_name, out);
+      collect_calls_in_stmts(project, mod, loop->body, caller_proc,
+                             callee_module, callee_name, out);
+      break;
+    }
     case STMT_BLOCK:
       collect_calls_in_stmts(
           project, mod, std::get<stmt::Block *>(stmt->data)->stmts, caller_proc,
@@ -2453,6 +2528,12 @@ void collect_outgoing_calls_in_stmts(const Project &project,
       collect_outgoing_calls_expr(project, mod, loop->cond, out, seen);
       if (loop->step != nullptr)
         collect_outgoing_calls_in_stmts(project, mod, {loop->step}, out, seen);
+      collect_outgoing_calls_in_stmts(project, mod, loop->body, out, seen);
+      break;
+    }
+    case STMT_FOR_IN: {
+      auto *loop = std::get<stmt::ForIn *>(stmt->data);
+      collect_outgoing_calls_expr(project, mod, loop->iterable, out, seen);
       collect_outgoing_calls_in_stmts(project, mod, loop->body, out, seen);
       break;
     }
