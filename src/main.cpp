@@ -1,3 +1,4 @@
+#include <fstream>
 #include <cstdlib>
 #include <cstring>
 #include <set>
@@ -11,6 +12,7 @@
 #include <host.hpp>
 #include <ir/irgen.hpp>
 #include <lexer/lexer.hpp>
+#include <lsp/format.hpp>
 #include <lsp/server.hpp>
 #include <module.hpp>
 #include <parser/printer.hpp>
@@ -48,6 +50,34 @@ static void report_project_diagnostic(const Opts &opts, const Project &project,
 int main(int argc, char *argv[]) {
   if (argc >= 2 && std::strcmp(argv[1], "lsp") == 0)
     return run_lsp_server();
+
+  if (argc >= 3 && std::strcmp(argv[1], "format") == 0) {
+    bool write = false;
+    std::string path = argv[2];
+  if (argc >= 4 && std::strcmp(argv[3], "-w") == 0)
+      write = true;
+    auto source = project_read_source(path);
+    if (!source.has_value()) {
+      std::fprintf(stderr, "Could not read `%s`\n", path.c_str());
+      return 1;
+    }
+    auto formatted = format_rye_source(source.value());
+    if (!formatted.has_value()) {
+      std::fprintf(stderr, "Could not format `%s` (parse error)\n", path.c_str());
+      return 1;
+    }
+    if (write) {
+      std::fstream out(path, std::ios::trunc | std::ios::out);
+      if (!out.is_open()) {
+        std::fprintf(stderr, "Could not write `%s`\n", path.c_str());
+        return 1;
+      }
+      out << *formatted;
+    } else {
+      std::fwrite(formatted->data(), 1, formatted->size(), stdout);
+    }
+    return 0;
+  }
 
   char *program = eat_arg();
 

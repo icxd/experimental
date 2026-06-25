@@ -3057,12 +3057,12 @@ IdeService::rename(std::string_view abs_path, size_t line, size_t character,
   return edits;
 }
 
-SemanticTokens IdeService::semantic_tokens(std::string_view abs_path) const {
-  const ParsedModule *module = module_for_path(_project, abs_path);
-  if (module == nullptr)
-    return {};
-
+static std::vector<RawSemanticToken>
+collect_module_semantic_raw(const ParsedModule *module) {
   std::vector<RawSemanticToken> raw{};
+  if (module == nullptr)
+    return raw;
+
   for (Decl *decl: module->decls) {
     switch (decl->type) {
     case DECL_PROC: {
@@ -3114,7 +3114,15 @@ SemanticTokens IdeService::semantic_tokens(std::string_view abs_path) const {
       break;
     }
   }
+  return raw;
+}
 
+SemanticTokens IdeService::semantic_tokens(std::string_view abs_path) const {
+  const ParsedModule *module = module_for_path(_project, abs_path);
+  if (module == nullptr)
+    return {};
+
+  std::vector<RawSemanticToken> raw = collect_module_semantic_raw(module);
   return encode_semantic_tokens(module->source, std::move(raw));
 }
 
@@ -3367,7 +3375,22 @@ IdeService::format_document(std::string_view abs_path) const {
 
 SemanticTokens IdeService::semantic_tokens_range(std::string_view abs_path,
                                                  const LspRange &range) const {
-  return semantic_tokens(abs_path);
+  const ParsedModule *module = module_for_path(_project, abs_path);
+  if (module == nullptr)
+    return {};
+
+  size_t range_start =
+      position_to_offset(module->source, range.start_line, range.start_character);
+  size_t range_end =
+      position_to_offset(module->source, range.end_line, range.end_character);
+  if (range_end < range_start)
+    std::swap(range_start, range_end);
+
+  std::vector<RawSemanticToken> raw = collect_module_semantic_raw(module);
+  std::erase_if(raw, [&](const RawSemanticToken &tok) {
+    return tok.end <= range_start || tok.start >= range_end;
+  });
+  return encode_semantic_tokens(module->source, std::move(raw));
 }
 
 SemanticTokensDelta IdeService::semantic_tokens_delta(

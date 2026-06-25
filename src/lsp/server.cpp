@@ -899,19 +899,44 @@ void LspServer::handle_request(int id, std::string_view method,
   }
 
   if (method == "textDocument/semanticTokens/full" ||
-      method == "textDocument/semanticTokens/full/delta") {
+      method == "textDocument/semanticTokens/full/delta" ||
+      method == "textDocument/semanticTokens/range") {
     auto uri = parse_text_document_uri(params);
     std::string previous_id;
+    std::optional<LspRange> token_range;
     if (params.is_object()) {
       const auto &obj = params.as_object();
       if (auto rid = obj.find("previousResultId");
           rid != obj.end() && rid->second.is_string())
         previous_id = rid->second.as_string();
+      if (method == "textDocument/semanticTokens/range") {
+        if (auto r = obj.find("range"); r != obj.end())
+          token_range = parse_range(r->second);
+      }
     }
 
     if (uri.has_value() && _documents.contains(*uri)) {
       const std::string &path = _documents.at(*uri).path;
       IdeService ide(_project);
+
+      if (method == "textDocument/semanticTokens/range") {
+        if (!token_range.has_value()) {
+          write_message(Json(Object{{"jsonrpc", "2.0"},
+                                    {"id", id},
+                                    {"result", Object{{"data", Array{}}}}}));
+          return;
+        }
+        SemanticTokens tokens =
+            ide.semantic_tokens_range(path, *token_range);
+        Array data{};
+        for (uint32_t value: tokens.data)
+          data.push_back(Json(static_cast<double>(value)));
+        write_message(Json(Object{{"jsonrpc", "2.0"},
+                                  {"id", id},
+                                  {"result", Object{{"data", data}}}}));
+        return;
+      }
+
       std::vector<uint32_t> previous =
           _semantic_token_cache.contains(*uri)
               ? _semantic_token_cache.at(*uri)

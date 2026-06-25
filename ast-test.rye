@@ -53,7 +53,9 @@ proc main() int {
   };
   var var_expr = Expr{
     type = .VAR,
-    data = VarExpr{name = "abc"},
+    data = VarExpr{
+      name = "abc",
+    },
   };
 
   visit(&int_expr);

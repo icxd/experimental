@@ -17,9 +17,27 @@ let startInFlight;
 /** @type {boolean} */
 let disposeHookRegistered = false;
 
+const STOP_TIMEOUT_MS = 5000;
+const RESTART_DELAY_MS = 200;
+
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   output?.appendLine(line);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stateLabel(state) {
+  const labels = {
+    1: "Stopped",
+    2: "Running",
+    3: "Starting",
+    4: "StartFailed",
+    5: "Stopping",
+  };
+  return labels[state] ?? String(state);
 }
 
 /**
@@ -111,12 +129,122 @@ async function stopLanguageClient() {
 
   const stopping = client;
   client = undefined;
+  log(`Stopping language server (state: ${stateLabel(stopping.state)})...`);
 
   try {
-    await stopping.stop();
-    log("Language server stopped.");
+    if (stopping.state === 2 || stopping.state === 3 || stopping.state === 5) {
+      await stopping.stop(STOP_TIMEOUT_MS);
+    }
   } catch (error) {
     log(`Language server stop failed: ${error}`);
+  }
+
+  try {
+    stopping.dispose();
+  } catch (error) {
+    log(`Language server dispose failed: ${error}`);
+  }
+
+  log("Language server stopped.");
+}
+
+/**
+ * @param {vscode.ExtensionContext} context
+ */
+async function runStartLanguageClient(context) {
+  let LanguageClient;
+  let TransportKind;
+
+  try {
+    ({ LanguageClient, TransportKind } = require("vscode-languageclient/node"));
+  } catch (error) {
+    const message =
+      "Failed to load vscode-languageclient. Run `npm install --omit=dev` in editor/vscode-rye, then reload the window.";
+    log(message);
+    log(String(error));
+    throw new Error(message);
+  }
+
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  const config = vscode.workspace.getConfiguration("rye", workspaceFolder?.uri);
+
+  const serverPath = resolveRyePath(config, workspaceFolder);
+  if (!fs.existsSync(serverPath)) {
+    const message = `Rye compiler not found at: ${serverPath}`;
+    log(message);
+    void vscode.window.showErrorMessage(
+      `${message}. Build with: cmake --build build --target rye`
+    );
+    throw new Error(message);
+  }
+
+  const importPaths = buildImportPaths(config, workspaceFolder);
+  const workspacePath = workspaceFolder?.uri.fsPath ?? "";
+  const cwd = workspacePath || path.dirname(serverPath);
+
+  log(`Starting language server: ${serverPath} lsp`);
+  log(`Working directory: ${cwd}`);
+  log(`Import paths: ${importPaths.join(", ") || "(none)"}`);
+  log(`LSP traffic log: ${path.join(cwd, ".rye", "lsp-traffic.log")}`);
+
+  const serverOptions = {
+    command: serverPath,
+    args: ["lsp"],
+    transport: TransportKind.stdio,
+    options: {
+      cwd,
+      env: {
+        ...process.env,
+        ...(config.get("lspDebug", false) ? { RYE_LSP_DEBUG: "1" } : {}),
+      },
+    },
+  };
+
+  const clientOptions = {
+    documentSelector: [{ language: "rye", scheme: "file" }],
+    initializationOptions: {
+      importPaths,
+      workspaceRoot: workspacePath || cwd,
+    },
+    outputChannelName: "Rye",
+    synchronize: {
+      configurationSection: "rye",
+    },
+  };
+
+  const newClient = new LanguageClient(
+    "rye",
+    "Rye Language Server",
+    serverOptions,
+    clientOptions
+  );
+
+  newClient.onDidChangeState((event) => {
+    log(
+      `Language client state: ${stateLabel(event.oldState)} -> ${stateLabel(event.newState)}`
+    );
+  });
+
+  client = newClient;
+  bindOutputChannel(newClient);
+  ensureDisposeHook(context);
+  context.subscriptions.push(newClient);
+
+  try {
+    await newClient.start();
+    log("Language server started.");
+  } catch (error) {
+    client = undefined;
+    log(`Failed to start language server: ${error}`);
+    try {
+      newClient.dispose();
+    } catch {
+      // ignore
+    }
+    void vscode.window.showErrorMessage(
+      "Failed to start language server. See Output → Rye for details."
+    );
+    throw error;
   }
 }
 
@@ -129,92 +257,7 @@ async function startLanguageClient(context) {
     return;
   }
 
-  startInFlight = (async () => {
-    let LanguageClient;
-    let TransportKind;
-
-    try {
-      ({ LanguageClient, TransportKind } = require("vscode-languageclient/node"));
-    } catch (error) {
-      const message =
-        "Failed to load vscode-languageclient. Run `npm install --omit=dev` in editor/vscode-rye, then reload the window.";
-      log(message);
-      log(String(error));
-      void vscode.window.showErrorMessage(`Rye: ${message}`);
-      return;
-    }
-
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    const config = vscode.workspace.getConfiguration("rye", workspaceFolder?.uri);
-
-    const serverPath = resolveRyePath(config, workspaceFolder);
-    if (!fs.existsSync(serverPath)) {
-      const message = `Rye compiler not found at: ${serverPath}`;
-      log(message);
-      void vscode.window.showErrorMessage(
-        `${message}. Build with: cmake --build build --target rye`
-      );
-      return;
-    }
-
-    await stopLanguageClient();
-
-    const importPaths = buildImportPaths(config, workspaceFolder);
-    const workspacePath = workspaceFolder?.uri.fsPath ?? "";
-    const cwd = workspacePath || path.dirname(serverPath);
-
-    log(`Starting language server: ${serverPath} lsp`);
-    log(`Working directory: ${cwd}`);
-    log(`Import paths: ${importPaths.join(", ") || "(none)"}`);
-    log(`LSP traffic log: ${path.join(cwd, ".rye", "lsp-traffic.log")}`);
-
-    const serverOptions = {
-      command: serverPath,
-      args: ["lsp"],
-      transport: TransportKind.stdio,
-      options: {
-        cwd,
-        env: {
-          ...process.env,
-          ...(config.get("lspDebug", false) ? { RYE_LSP_DEBUG: "1" } : {}),
-        },
-      },
-    };
-
-    const clientOptions = {
-      documentSelector: [{ language: "rye", scheme: "file" }],
-      initializationOptions: {
-        importPaths,
-        workspaceRoot: workspacePath || cwd,
-      },
-      outputChannelName: "Rye",
-      synchronize: {
-        configurationSection: "rye",
-      },
-    };
-
-    const newClient = new LanguageClient(
-      "rye",
-      "Rye Language Server",
-      serverOptions,
-      clientOptions
-    );
-
-    client = newClient;
-    bindOutputChannel(newClient);
-    ensureDisposeHook(context);
-
-    try {
-      await newClient.start();
-      log("Language server started.");
-    } catch (error) {
-      client = undefined;
-      log(`Failed to start language server: ${error}`);
-      void vscode.window.showErrorMessage(
-        `Rye: failed to start language server. See Output → Rye for details.`
-      );
-    }
-  })();
+  startInFlight = runStartLanguageClient(context);
 
   try {
     await startInFlight;
@@ -228,8 +271,36 @@ async function startLanguageClient(context) {
  */
 async function restartLanguageServer(context) {
   log("Restarting language server...");
-  await startLanguageClient(context);
-  void vscode.window.showInformationMessage("Rye language server restarted.");
+
+  if (startInFlight) {
+    try {
+      await startInFlight;
+    } catch {
+      // A failed start should not block restart.
+    }
+  }
+
+  startInFlight = undefined;
+  await stopLanguageClient();
+  await delay(RESTART_DELAY_MS);
+
+  startInFlight = runStartLanguageClient(context);
+
+  try {
+    await startInFlight;
+    if (!client) {
+      throw new Error("language client is not running after restart");
+    }
+    log("Language server restart complete.");
+    void vscode.window.showInformationMessage("Language server restarted.");
+  } catch (error) {
+    log(`Restart failed: ${error}`);
+    void vscode.window.showErrorMessage(
+      "Failed to restart language server. See Output → Rye for details."
+    );
+  } finally {
+    startInFlight = undefined;
+  }
 }
 
 /**
@@ -255,6 +326,14 @@ function activate(context) {
 
 async function deactivate() {
   log("Rye extension deactivating.");
+  if (startInFlight) {
+    try {
+      await startInFlight;
+    } catch {
+      // ignore
+    }
+  }
+  startInFlight = undefined;
   await stopLanguageClient();
 }
 

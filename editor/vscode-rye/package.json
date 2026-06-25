@@ -23,12 +23,12 @@
     "commands": [
       {
         "command": "rye.restartLanguageServer",
-        "title": "Rye: Restart Language Server",
+        "title": "Restart Language Server",
         "category": "Rye"
       },
       {
         "command": "rye.showOutput",
-        "title": "Rye: Show Output",
+        "title": "Show Output",
         "category": "Rye"
       }
     ],
