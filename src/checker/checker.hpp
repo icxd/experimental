@@ -95,22 +95,6 @@ private:
       const std::vector<Stmt *> &block, Scope *scope);
   ErrorOr<std::vector<Stmt *>> resolve_when_stmt(Stmt *stmt, Scope *scope);
   ErrorOr<void> expand_when_stmts(std::vector<Stmt *> &stmts, Scope *scope);
-  ErrorOr<void> expand_for_in_stmts(std::vector<Stmt *> &stmts, Scope *scope);
-  ErrorOr<std::vector<Stmt *>> desugar_for_in(stmt::ForIn *for_in, size_t start,
-                                              size_t end);
-  Token synthetic_token(std::string name, size_t start, size_t end);
-  Expr *make_var_expr(Token name);
-  Expr *make_int_expr(int64_t value, size_t start, size_t end);
-  Expr *make_index_expr(Expr *base, int64_t idx, size_t start, size_t end);
-  Expr *make_method_call(Expr *receiver, std::string_view method);
-  Stmt *make_var_stmt(size_t start, size_t end, Token name, Type *type,
-                      Expr *value);
-  Stmt *make_assign_stmt(size_t start, size_t end, Expr *target, Expr *value);
-  Stmt *make_while_stmt(size_t start, size_t end, Expr *cond,
-                        std::vector<Stmt *> body);
-  ErrorOr<std::vector<Stmt *>>
-  make_tuple_destructure(size_t start, size_t end, std::vector<Token> names,
-                         Expr *rhs, bool declare_names);
 
   ErrorOr<Type *> check_lvalue(Expr *expr, Scope *scope);
   bool type_eq(Type *a, Type *b) const;
@@ -184,7 +168,6 @@ private:
   std::vector<CheckedStruct> _structs = {};
   std::vector<CheckedEnum> _enums = {};
   size_t _loop_depth = 0;
-  size_t _for_in_tmp = 0;
 };
 
 static inline bool is_null_pointer_literal(Expr *expr) {
