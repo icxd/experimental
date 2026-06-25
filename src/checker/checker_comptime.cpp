@@ -4,6 +4,7 @@
 
 #include <arena.hpp>
 #include <parser/comptime_parse.hpp>
+#include <parser/for_in_desugar.hpp>
 
 Type *Checker::comptime_string_type() {
   if (_comptime_string_type == nullptr)
@@ -469,7 +470,7 @@ ErrorOr<void> Checker::expand_comptime_stmts(std::vector<Stmt *> &stmts,
       try$(expand_comptime_stmts(loop->body, scope));
     } else if (stmt->type == STMT_FOR_IN) {
       auto *loop = std::get<stmt::ForIn *>(stmt->data);
-      try$(expand_for_in_stmts(loop->body, scope));
+      try$(expand_for_in_stmts(loop->body, _arena));
     }
 
     ++i;

@@ -158,6 +158,14 @@ Expr *find_expr_containing_offset(Expr *expr, size_t offset) {
   }
   case EXPR_CALL: {
     auto *call = std::get<expr::Call *>(expr->data);
+    if (call->callee != nullptr) {
+      if (Expr *inner = find_expr_containing_offset(call->callee, offset))
+        return inner;
+    }
+    if (call->receiver != nullptr) {
+      if (Expr *inner = find_expr_containing_offset(call->receiver, offset))
+        return inner;
+    }
     for (Expr *arg: call->arguments) {
       if (Expr *inner = find_expr_containing_offset(arg, offset))
         return inner;
@@ -493,10 +501,29 @@ Expr *find_call_at_offset(Expr *expr, size_t offset) {
   if (offset < expr->start || offset >= expr->end)
     return nullptr;
 
-  if (expr->type == EXPR_CALL)
-    return expr;
-
   switch (expr->type) {
+  case EXPR_CALL: {
+    auto *call = std::get<expr::Call *>(expr->data);
+    if (call->receiver != nullptr) {
+      if (Expr *found = find_call_at_offset(call->receiver, offset))
+        return found;
+    }
+    if (call->callee != nullptr) {
+      if (Expr *found = find_call_at_offset(call->callee, offset))
+        return found;
+    }
+    for (Expr *arg: call->arguments) {
+      if (Expr *found = find_call_at_offset(arg, offset))
+        return found;
+    }
+    if (call->name.has_value() &&
+        offset_in_token(offset, call->name->start, call->name->end))
+      return expr;
+    if (call->callee != nullptr &&
+        offset_in_token(offset, call->callee->start, call->callee->end))
+      return expr;
+    return nullptr;
+  }
   case EXPR_BINARY: {
     auto *bin = std::get<expr::Binary *>(expr->data);
     if (Expr *found = find_call_at_offset(bin->lhs, offset))
@@ -1766,6 +1793,9 @@ constexpr uint32_t MOD_DECLARATION = 1 << 0;
 constexpr uint32_t MOD_DEFINITION = 1 << 1;
 constexpr uint32_t MOD_READONLY = 1 << 2;
 
+void collect_sem_tokens_in_stmts(const std::vector<Stmt *> &stmts,
+                                 std::vector<RawSemanticToken> &out);
+
 void collect_sem_tokens_in_type(Type *type, std::vector<RawSemanticToken> &out) {
   if (type == nullptr)
     return;
@@ -1783,6 +1813,7 @@ void collect_sem_tokens_in_type(Type *type, std::vector<RawSemanticToken> &out) 
     add_sem_token(out, type->start, type->end, SEM_STRUCT);
     break;
   case TYPE_PTR:
+    add_sem_token(out, type->start, type->end, SEM_TYPE);
     collect_sem_tokens_in_type(std::get<type::Ptr *>(type->data)->inner, out);
     break;
   case TYPE_TUPLE: {
@@ -1888,6 +1919,22 @@ void collect_sem_tokens_in_expr(Expr *expr, std::vector<RawSemanticToken> &out) 
     auto *index = std::get<expr::Index *>(expr->data);
     collect_sem_tokens_in_expr(index->base, out);
     collect_sem_tokens_in_expr(index->index, out);
+    return;
+  }
+  case EXPR_TUPLE: {
+    auto *tuple = std::get<expr::TupleLit *>(expr->data);
+    for (Expr *element: tuple->elements)
+      collect_sem_tokens_in_expr(element, out);
+    return;
+  }
+  case EXPR_PROC_LIT: {
+    auto *lit = std::get<expr::ProcLit *>(expr->data);
+    for (const Param &param: lit->params) {
+      add_sem_token(out, param.name.start, param.name.end, SEM_PARAMETER);
+      collect_sem_tokens_in_type(param.type, out);
+    }
+    collect_sem_tokens_in_type(lit->ret_type, out);
+    collect_sem_tokens_in_stmts(lit->body, out);
     return;
   }
   default:

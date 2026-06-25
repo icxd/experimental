@@ -1,11 +1,10 @@
 #include <algorithm>
-#include <cstring>
 #include <utility>
 
-#include <arena.hpp>
 #include <checker/checker.hpp>
 #include <host.hpp>
 #include <module.hpp>
+#include <parser/for_in_desugar.hpp>
 #include "parser/ast.hpp"
 
 namespace fs = std::filesystem;
@@ -215,221 +214,6 @@ ErrorOr<void> Checker::expand_when_stmts(std::vector<Stmt *> &stmts,
   return {};
 }
 
-Token Checker::synthetic_token(std::string name, size_t start, size_t end) {
-  char *storage = static_cast<char *>(_arena->allocate(name.size() + 1));
-  std::memcpy(storage, name.data(), name.size());
-  storage[name.size()] = '\0';
-  return Token{.type = TOK_ID,
-               .start = start,
-               .end = end,
-               .id_value = std::string_view(storage, name.size())};
-}
-
-Expr *Checker::make_var_expr(Token name) {
-  return _arena->create<Expr>(Expr{
-      .type = EXPR_VAR,
-      .start = name.start,
-      .end = name.end,
-      .data = _arena->create<expr::Var>(expr::Var{.var = name}),
-  });
-}
-
-Expr *Checker::make_int_expr(int64_t value, size_t start, size_t end) {
-  return _arena->create<Expr>(Expr{
-      .type = EXPR_INT,
-      .start = start,
-      .end = end,
-      .data = _arena->create<expr::Int>(expr::Int{.value = value}),
-  });
-}
-
-Expr *Checker::make_index_expr(Expr *base, int64_t idx, size_t start,
-                               size_t end) {
-  Expr *index = make_int_expr(idx, start, end);
-  return _arena->create<Expr>(Expr{
-      .type = EXPR_INDEX,
-      .start = start,
-      .end = end,
-      .data = _arena->create<expr::Index>(
-          expr::Index{.base = base, .index = index}),
-  });
-}
-
-Expr *Checker::make_method_call(Expr *receiver, std::string_view method) {
-  Token method_token =
-      synthetic_token(std::string(method), receiver->end, receiver->end);
-  return _arena->create<Expr>(Expr{
-      .type = EXPR_CALL,
-      .start = receiver->start,
-      .end = receiver->end,
-      .data = _arena->create<expr::Call>(
-          expr::Call{.name = method_token, .arguments = {}, .receiver = receiver}),
-  });
-}
-
-Stmt *Checker::make_var_stmt(size_t start, size_t end, Token name, Type *type,
-                             Expr *value) {
-  return _arena->create<Stmt>(Stmt{
-      .type = STMT_VAR,
-      .start = start,
-      .end = end,
-      .data = _arena->create<stmt::Var>(
-          stmt::Var{.name = name, .type = type, .value = value}),
-  });
-}
-
-Stmt *Checker::make_assign_stmt(size_t start, size_t end, Expr *target,
-                              Expr *value) {
-  return _arena->create<Stmt>(Stmt{
-      .type = STMT_ASSIGN,
-      .start = start,
-      .end = end,
-      .data = _arena->create<stmt::Assign>(
-          stmt::Assign{.target = target, .value = value}),
-  });
-}
-
-Stmt *Checker::make_while_stmt(size_t start, size_t end, Expr *cond,
-                               std::vector<Stmt *> body) {
-  return _arena->create<Stmt>(Stmt{
-      .type = STMT_WHILE,
-      .start = start,
-      .end = end,
-      .data = _arena->create<stmt::While>(stmt::While{.cond = cond, .body = body}),
-  });
-}
-
-ErrorOr<std::vector<Stmt *>>
-Checker::make_tuple_destructure(size_t start, size_t end,
-                               std::vector<Token> names, Expr *rhs,
-                               bool declare_names) {
-  if (names.empty()) {
-    return std::unexpected(
-        Error("Expected at least one name in destructure pattern", start, end));
-  }
-
-  Token tmp =
-      synthetic_token(std::format("__dtmp{}", _for_in_tmp++), start, rhs->end);
-  std::vector<Stmt *> stmts{};
-  stmts.push_back(make_var_stmt(start, end, tmp, nullptr, rhs));
-
-  Expr *base = make_var_expr(tmp);
-  for (size_t i = 0; i < names.size(); i++) {
-    if (names[i].id_value == "_")
-      continue;
-    Expr *elem =
-        make_index_expr(base, static_cast<int64_t>(i), names[i].start,
-                        names[i].end);
-    if (declare_names) {
-      stmts.push_back(make_var_stmt(names[i].start, names[i].end, names[i],
-                                    nullptr, elem));
-    } else {
-      stmts.push_back(make_assign_stmt(names[i].start, names[i].end,
-                                       make_var_expr(names[i]), elem));
-    }
-  }
-
-  if (stmts.size() == 1) {
-    return std::unexpected(Error(
-        "Destructure pattern must bind at least one name", start, end));
-  }
-
-  return stmts;
-}
-
-ErrorOr<std::vector<Stmt *>> Checker::desugar_for_in(stmt::ForIn *for_in,
-                                                     size_t start, size_t end) {
-  if (_arena == nullptr)
-    PANIC("arena required for for-in desugar");
-
-  size_t anchor = for_in->iterable->end;
-  size_t suffix = _for_in_tmp++;
-  Token it_token =
-      synthetic_token(std::format("__rye_it{}", suffix), anchor, anchor);
-  Token ok_token =
-      synthetic_token(std::format("__rye_ok{}", suffix), anchor, anchor);
-  Token binding_token = for_in->binding->name;
-
-  Expr *iter_call = make_method_call(for_in->iterable, "iter");
-  Stmt *it_decl = make_var_stmt(anchor, anchor, it_token, nullptr, iter_call);
-
-  Expr *it_expr = make_var_expr(it_token);
-  Expr *next_call = make_method_call(it_expr, "next");
-
-  std::vector<Stmt *> init_stmts{};
-  if (for_in->binding->type != nullptr) {
-    Token tmp =
-        synthetic_token(std::format("__rye_next{}", suffix), anchor, anchor);
-    init_stmts.push_back(make_var_stmt(anchor, anchor, tmp, nullptr, next_call));
-    Expr *tmp_expr = make_var_expr(tmp);
-    init_stmts.push_back(
-        make_var_stmt(anchor, anchor, ok_token, nullptr,
-                      make_index_expr(tmp_expr, 0, anchor, anchor)));
-    init_stmts.push_back(
-        make_var_stmt(binding_token.start, binding_token.end, binding_token,
-                      for_in->binding->type,
-                      make_index_expr(tmp_expr, 1, binding_token.start,
-                                      binding_token.end)));
-  } else {
-    std::vector<Stmt *> destructure = try$(
-        make_tuple_destructure(anchor, anchor, {ok_token, binding_token},
-                               next_call, true));
-    init_stmts.insert(init_stmts.end(), destructure.begin(), destructure.end());
-  }
-
-  std::vector<Stmt *> while_body = for_in->body;
-  Expr *next_step = make_method_call(make_var_expr(it_token), "next");
-  std::vector<Stmt *> step_stmts = try$(
-      make_tuple_destructure(anchor, anchor, {ok_token, binding_token},
-                             next_step, false));
-  while_body.insert(while_body.end(), step_stmts.begin(), step_stmts.end());
-
-  Stmt *while_stmt =
-      make_while_stmt(anchor, end, make_var_expr(ok_token), while_body);
-
-  std::vector<Stmt *> out{it_decl};
-  out.insert(out.end(), init_stmts.begin(), init_stmts.end());
-  out.push_back(while_stmt);
-  return out;
-}
-
-ErrorOr<void> Checker::expand_for_in_stmts(std::vector<Stmt *> &stmts,
-                                            Scope *scope) {
-  for (size_t i = 0; i < stmts.size();) {
-    Stmt *stmt = stmts[i];
-
-    if (stmt->type == STMT_FOR_IN) {
-      auto *for_in = std::get<stmt::ForIn *>(stmt->data);
-      std::vector<Stmt *> expanded =
-          try$(desugar_for_in(for_in, stmt->start, stmt->end));
-      stmts.erase(stmts.begin() + static_cast<std::ptrdiff_t>(i));
-      stmts.insert(stmts.begin() + static_cast<std::ptrdiff_t>(i),
-                   expanded.begin(), expanded.end());
-      i += expanded.size();
-      continue;
-    }
-
-    if (stmt->type == STMT_BLOCK) {
-      auto *block = std::get<stmt::Block *>(stmt->data);
-      try$(expand_for_in_stmts(block->stmts, scope));
-    } else if (stmt->type == STMT_IF) {
-      auto *iff = std::get<stmt::If *>(stmt->data);
-      try$(expand_for_in_stmts(iff->then_block, scope));
-      try$(expand_for_in_stmts(iff->else_block, scope));
-    } else if (stmt->type == STMT_WHILE) {
-      auto *loop = std::get<stmt::While *>(stmt->data);
-      try$(expand_for_in_stmts(loop->body, scope));
-    } else if (stmt->type == STMT_FOR) {
-      auto *loop = std::get<stmt::For *>(stmt->data);
-      try$(expand_for_in_stmts(loop->body, scope));
-    }
-
-    ++i;
-  }
-
-  return {};
-}
-
 ErrorOr<void> Checker::check_decls(std::vector<Decl *> &decls) {
     try$(inject_builtin_consts());
   try$(inject_define_consts());
@@ -568,7 +352,7 @@ ErrorOr<void> Checker::check_decl(Decl *decl, Scope *scope) {
 
     try$(expand_comptime_stmts(proc->body, proc_scope));
     try$(expand_when_stmts(proc->body, proc_scope));
-    try$(expand_for_in_stmts(proc->body, proc_scope));
+    try$(expand_for_in_stmts(proc->body, _arena));
     for (auto *stmt: proc->body)
       try$(check_stmt(stmt, proc_scope));
 
@@ -1027,7 +811,7 @@ ErrorOr<void> Checker::check_stmt(Stmt *stmt, Scope *scope) {
     stmt::Block *block = std::get<stmt::Block *>(stmt->data);
     Scope *block_scope = block->scoped ? Scope::create(scope) : scope;
     try$(expand_when_stmts(block->stmts, block_scope));
-    try$(expand_for_in_stmts(block->stmts, block_scope));
+    try$(expand_for_in_stmts(block->stmts, _arena));
     for (Stmt *inner: block->stmts)
       try$(check_stmt(inner, block_scope));
     return {};
@@ -2110,7 +1894,7 @@ ErrorOr<Type *> Checker::check_expr(Expr *expr, Scope *scope, Type *expected) {
     _current_proc_id = _procs.size() - 1;
 
     try$(expand_when_stmts(lit->body, lambda_scope));
-    try$(expand_for_in_stmts(lit->body, lambda_scope));
+    try$(expand_for_in_stmts(lit->body, _arena));
     for (auto *stmt: lit->body)
       try$(check_stmt(stmt, lambda_scope));
 
@@ -2496,6 +2280,7 @@ Checker::execute_comptime_stmts(const std::vector<Stmt *> &stmts,
     }
 
     case STMT_WHEN:
+    case STMT_FOR_IN:
     case STMT_BREAK:
     case STMT_CONTINUE:
     case STMT_COMPTIME_BLOCK:

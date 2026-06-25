@@ -37,6 +37,7 @@ add_executable(rye
     src/lexer/lexer.cpp
     src/parser/parser.cpp
     src/parser/comptime_parse.cpp
+    src/parser/for_in_desugar.cpp
     src/checker/checker.cpp
     src/checker/checker_comptime.cpp
     src/ir/ir.cpp
