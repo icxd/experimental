@@ -15,6 +15,7 @@
 #include <lsp/format.hpp>
 #include <lsp/ide.hpp>
 #include <lsp/json.hpp>
+#include <rye_paths.hpp>
 
 namespace {
 
@@ -75,6 +76,9 @@ private:
 
 class LspServer {
 public:
+  explicit LspServer(std::optional<std::string> argv0) :
+      _argv0(std::move(argv0)) {}
+
   void run();
 
 private:
@@ -118,6 +122,7 @@ private:
   bool _lsp_debug = false;
   std::optional<std::string> _root_uri;
   std::optional<std::string> _workspace_root;
+  std::optional<std::string> _argv0;
 };
 
 std::optional<std::string> LspServer::read_message() {
@@ -232,18 +237,17 @@ std::optional<LspRange> LspServer::parse_range(const Json &obj) const {
 }
 
 std::vector<std::string> LspServer::roots() const {
-  namespace fs = std::filesystem;
-  std::vector<std::string> result{};
+  std::optional<std::string> dev_root;
   if (_workspace_root.has_value()) {
+    namespace fs = std::filesystem;
     fs::path root(*_workspace_root);
-    result.push_back((root / "runtime" / "ryert.rye").string());
-    result.push_back((root / "std" / "string.rye").string());
-    result.push_back((root / "std" / "compiler.rye").string());
-  } else {
-    result.push_back("runtime/ryert.rye");
-    result.push_back("std/string.rye");
-    result.push_back("std/compiler.rye");
+    std::error_code ec;
+    if (fs::exists(root / "std" / "string.rye", ec))
+      dev_root = _workspace_root;
   }
+
+  std::vector<std::string> result =
+      rye_builtin_modules(_argv0, dev_root);
   for (const auto &[uri, doc]: _documents)
     result.push_back(doc.path);
   return result;
@@ -252,6 +256,12 @@ std::vector<std::string> LspServer::roots() const {
 void LspServer::ensure_import_paths() {
   if (_import_paths.empty())
     _import_paths.push_back(std::filesystem::current_path().string());
+  if (auto root = rye_install_root(_argv0)) {
+    std::string root_str = root.value();
+    if (std::find(_import_paths.begin(), _import_paths.end(), root_str) ==
+        _import_paths.end())
+      _import_paths.push_back(root_str);
+  }
   if (!_workspace_root.has_value())
     return;
   if (std::find(_import_paths.begin(), _import_paths.end(),
@@ -1272,8 +1282,11 @@ void LspServer::run() {
 
 } // namespace
 
-int run_lsp_server() {
-  LspServer server;
+int run_lsp_server(int argc, char **argv) {
+  std::optional<std::string> argv0;
+  if (argc > 0)
+    argv0 = argv[0];
+  LspServer server(std::move(argv0));
   server.run();
   return 0;
 }

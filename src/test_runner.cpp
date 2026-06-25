@@ -10,6 +10,7 @@
 #include <compile_cache.hpp>
 #include <compile_config.hpp>
 #include <frontend/project.hpp>
+#include <rye_paths.hpp>
 #include <host.hpp>
 #include <ir/irgen.hpp>
 #include <module.hpp>
@@ -234,11 +235,7 @@ int run_test_suite(Opts &opts, int argc, char **argv) {
   };
   Project project(popts);
 
-  std::vector<std::string> roots{
-      "runtime/ryert.rye",
-      "std/string.rye",
-      "std/compiler.rye",
-  };
+  std::vector<std::string> roots = rye_builtin_modules();
   if (!project.rebuild(roots).has_value())
     return EXIT_FAILURE;
   if (!project.diagnostics().empty())

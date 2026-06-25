@@ -16,6 +16,7 @@
 #include <lsp/server.hpp>
 #include <module.hpp>
 #include <parser/printer.hpp>
+#include <rye_paths.hpp>
 #include <test_runner.hpp>
 
 namespace fs = std::filesystem;
@@ -49,7 +50,7 @@ static void report_project_diagnostic(const Opts &opts, const Project &project,
 
 int main(int argc, char *argv[]) {
   if (argc >= 2 && std::strcmp(argv[1], "lsp") == 0)
-    return run_lsp_server();
+    return run_lsp_server(argc, argv);
 
   if (argc >= 3 && std::strcmp(argv[1], "format") == 0) {
     bool write = false;
@@ -82,16 +83,12 @@ int main(int argc, char *argv[]) {
   char *program = eat_arg();
 
   Opts opts;
-  opts.import_paths.push_back(fs::current_path().string());
+  rye_configure_paths(opts, program);
 
   if (argc >= 1 && std::strcmp(argv[0], "test") == 0) {
     eat_arg();
     return run_test_suite(opts, argc, argv);
   }
-
-  opts.files.push_back("runtime/ryert.rye");
-  opts.files.push_back("std/string.rye");
-  opts.files.push_back("std/compiler.rye");
 
   for (int i = 0; i < argc;) {
     char *opt = argv[i++];

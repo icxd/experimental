@@ -26,9 +26,12 @@ CPMAddPackage(
     GIT_TAG v0.9.7
 )
 
+include(GNUInstallDirs)
+
 add_executable(rye
     src/main.cpp
     src/test_runner.cpp
+    src/rye_paths.cpp
     src/frontend/project.cpp
     src/lsp/json.cpp
     src/lsp/ide.cpp
@@ -50,6 +53,21 @@ add_executable(rye
 
 target_include_directories(rye PRIVATE src)
 target_link_libraries(rye PRIVATE magic_enum::magic_enum)
+
+target_compile_definitions(rye PRIVATE
+    RYE_INSTALL_DATADIR="${CMAKE_INSTALL_FULL_DATADIR}/rye")
+
+install(TARGETS rye RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(
+    DIRECTORY std/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/rye/std
+    FILES_MATCHING PATTERN "*.rye")
+
+install(
+    DIRECTORY runtime/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/rye/runtime
+    FILES_MATCHING PATTERN "*.rye")
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   if(APPLE)

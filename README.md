@@ -16,6 +16,44 @@ cmake ..
 cmake --build .
 ```
 
+## Installing
+
+Install the compiler, standard library, and runtime to a system prefix (default `/usr/local`):
+
+```bash
+cmake --build build
+cmake --install build
+```
+
+Layout:
+
+| Path | Contents |
+|------|----------|
+| `bin/rye` | Compiler binary |
+| `share/rye/std/` | Standard library (`import "std/…"`) |
+| `share/rye/runtime/` | Runtime glue (`runtime/ryert.rye`) |
+
+Use a custom prefix:
+
+```bash
+cmake --install build --prefix "$HOME/.local"
+```
+
+Or staging with `DESTDIR` for packaging:
+
+```bash
+DESTDIR=/tmp/rye-staging cmake --install build
+```
+
+After install, `rye` resolves `std/` and `runtime/` from the install tree — you can compile from any working directory without `-I`. Override the data root with `RYE_PREFIX` if needed:
+
+```bash
+export RYE_PREFIX=/opt/rye/share/rye
+rye myprogram.rye -O myprogram
+```
+
+When developing in the repository, running `./build/rye` still works from the repo root (or any directory where the data tree is discoverable).
+
 ## Running tests
 
 ```bash
@@ -108,7 +146,7 @@ The compiler always links `std/string.rye`, which defines the standard `String` 
 
 ### Standard library
 
-The repository ships a small standard library under `std/`. The compiler adds the current working directory to the import search path by default, so `import "std/math.rye"` resolves when you run `rye` from the project root.
+The repository ships a small standard library under `std/`. When run from the project root, imports resolve via the working directory. An installed `rye` resolves `std/` from `share/rye/` next to the binary (or `RYE_PREFIX`).
 
 | Module | Import | Provides |
 |--------|--------|----------|
